@@ -1,6 +1,6 @@
 # AI Ops API
 
-Python 3.14와 FastAPI로 구성한 API 프로젝트입니다. `uv`로 의존성과 가상환경을 관리합니다.
+Python 3.11과 FastAPI로 구성한 API 프로젝트입니다. `uv`로 의존성과 가상환경을 관리합니다.
 
 ## 설치
 
