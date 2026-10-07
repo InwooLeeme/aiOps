@@ -274,7 +274,7 @@ def train_local(csv_path, epochs=BASE_EPOCHS, directory=None) -> dict:
 
 
 def _log_and_register(
-    model, scaler, metadata, passed, example, model_name=MODEL_NAME
+    model, scaler, metadata, passed, example, model_name=MODEL_NAME, *, promote=True
 ) -> dict:
     import mlflow
     import mlflow.tensorflow
@@ -314,19 +314,21 @@ def _log_and_register(
             "metrics": metadata["metrics"],
             "rmse": metadata["metrics"]["validation"]["model"]["rmse"],
             "promoted": False,
+            "gate_passed": bool(passed),
             "version": None,
         }
         if passed:
             version = mlflow.register_model(
                 f"runs:/{run.info.run_id}/model", model_name
             )
-            MlflowClient().transition_model_version_stage(
-                name=model_name,
-                version=version.version,
-                stage="Production",
-                archive_existing_versions=True,
-            )
-            result.update(promoted=True, version=str(version.version))
+            if promote:
+                MlflowClient().transition_model_version_stage(
+                    name=model_name,
+                    version=version.version,
+                    stage="Production",
+                    archive_existing_versions=True,
+                )
+            result.update(promoted=promote, version=str(version.version))
         return result
 
 
@@ -354,6 +356,7 @@ def fine_tune(
     incumbent=None,
     model_name=MODEL_NAME,
     metadata_extra=None,
+    promote=True,
 ) -> dict:
     """주어진 과거 관측치의 마지막 7일을 검증으로 남겨 incumbent와 비교합니다."""
     from tensorflow import keras
@@ -411,7 +414,13 @@ def fine_tune(
     )
     metadata.update(metadata_extra or {})
     return _log_and_register(
-        model, incumbent.scaler, metadata, passed, train["X"][:1], model_name=model_name
+        model,
+        incumbent.scaler,
+        metadata,
+        passed,
+        train["X"][:1],
+        model_name=model_name,
+        promote=promote,
     )
 
 

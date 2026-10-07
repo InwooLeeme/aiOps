@@ -89,7 +89,7 @@ def _load_from_local() -> LoadedModel:
     )
 
 
-def _load_from_mlflow(model_name=MODEL_NAME) -> LoadedModel:
+def _load_from_mlflow(model_name=MODEL_NAME, *, version=None) -> LoadedModel:
     import mlflow.tensorflow
     from mlflow.tracking import MlflowClient
 
@@ -97,15 +97,17 @@ def _load_from_mlflow(model_name=MODEL_NAME) -> LoadedModel:
 
     configure_tracking()
     client = MlflowClient()
-    candidates = client.get_latest_versions(model_name, ["Production"])
-    production = max(
-        (v for v in candidates if v.current_stage == "Production"),
-        key=lambda v: int(v.version),
-        default=None,
-    )
-    if production is None:
-        raise FileNotFoundError(f"{model_name}의 Production 모델이 없습니다")
-    version = str(production.version)
+    if version is None:
+        candidates = client.get_latest_versions(model_name, ["Production"])
+        production = max(
+            (v for v in candidates if v.current_stage == "Production"),
+            key=lambda v: int(v.version),
+            default=None,
+        )
+        if production is None:
+            raise FileNotFoundError(f"{model_name}의 Production 모델이 없습니다")
+        version = str(production.version)
+    version = str(version)
     pinned = client.get_model_version(model_name, version)
     directory = Path(client.download_artifacts(pinned.run_id, "bundle"))
     scaler, metadata = read_bundle(directory)
@@ -113,6 +115,38 @@ def _load_from_mlflow(model_name=MODEL_NAME) -> LoadedModel:
     return LoadedModel(
         model, scaler, "production", registry_version=version, metadata=metadata
     )
+
+
+def promote_candidate(version, incumbent, sequence) -> LoadedModel:
+    """후보 번들 로딩·실제 추론을 완료한 뒤 Production과 캐시를 교체한다."""
+    from mlflow.tracking import MlflowClient
+
+    global _model_cache
+    replacement = _load_from_mlflow(version=str(version))
+    if not replacement.metadata.get("gate_passed"):
+        raise ValueError("검증 게이트를 통과한 후보만 승격할 수 있습니다")
+    if str(replacement.metadata.get("parent_version")) != str(
+        incumbent.registry_version
+    ):
+        raise ValueError("후보의 기준 모델이 현재 운영 모델과 다릅니다")
+    value = replacement.predict_one(sequence)
+    if not math.isfinite(value):
+        raise ValueError("후보 모델이 유한한 발전량을 반환하지 않았습니다")
+    with _cache_lock:
+        if _model_cache is not incumbent:
+            raise ValueError("재학습 중 서빙 모델이 변경되었습니다")
+        client = MlflowClient()
+        production = client.get_latest_versions(MODEL_NAME, ["Production"])
+        versions = {
+            str(v.version) for v in production if v.current_stage == "Production"
+        }
+        if versions != {str(incumbent.registry_version)}:
+            raise ValueError("재학습 중 Production 모델이 변경되었습니다")
+        client.transition_model_version_stage(
+            MODEL_NAME, str(version), "Production", archive_existing_versions=True
+        )
+        _model_cache = replacement
+    return replacement
 
 
 def _load_model() -> LoadedModel:
