@@ -13,7 +13,7 @@ from serving_app.train_and_register import train_local
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--csv", required=True, help="통합된 제주 시간별 태양광 CSV")
+    parser.add_argument("--csv", help="생략하면 최신 업로드 또는 제주 샘플 사용")
     parser.add_argument("--epochs", type=int, default=BASE_EPOCHS)
     args = parser.parse_args()
     print(json.dumps(train_local(args.csv, args.epochs), ensure_ascii=False, indent=2))

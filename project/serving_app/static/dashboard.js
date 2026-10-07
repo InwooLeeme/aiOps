@@ -98,7 +98,7 @@ async function loadDataset(fillExample=false) {
     return;
   }
   const filename = document.createElement("code"); filename.textContent = data.filename; description.append(filename);
-  description.append(document.createTextNode(` · ${data.region} 시간별 데이터 · 시각은 KST입니다.`));
+  description.append(document.createTextNode(` · ${data.source === "sample" ? "기본 샘플" : "업로드"} · ${data.region} 시간별 데이터 · 시각은 KST입니다.`));
   $("dataset-stats").innerHTML = [
     ["행 수",number(data.rows)],["시작 시각",data.start_date],["종료 시각",data.end_date],
     ["최소 발전량",energy(data.min_generation_mwh)],["최대 발전량",energy(data.max_generation_mwh)],

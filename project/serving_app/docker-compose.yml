@@ -1,4 +1,4 @@
-# 먼저 동일 runtime 볼륨에 태양광 Production 모델을 등록하세요(README 참고).
+# 빈 runtime은 자동 학습·등록하고 기존 Production은 재사용합니다.
 services:
   serving-app:
     build:
@@ -8,6 +8,7 @@ services:
     environment:
       MODEL_SOURCE: ${MODEL_SOURCE:-mlflow}
       LOADING_MODE: eager
+      AUTO_PREPARE: "1"
     volumes:
       - ./models/solar:/app/serving_app/models/solar:ro
       - ../data/uploads:/app/data/uploads

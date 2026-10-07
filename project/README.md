@@ -39,7 +39,10 @@ uv run python project/scripts/train_baseline_v1.py \
 ```
 
 원본은 `project/data/uploads/solar_*.csv`로 보관합니다. 과거 HAIC 업로드는 선택하지 않습니다.
-현재 작업의 원본 사본은 `project/data/uploads/solar_jeju_2019_2024.csv`입니다.
+업로드가 없으면 `project/data/sample_jeju_solar.csv`를 사용합니다. 이 파일은 제공받은
+제주 원본 52,248행의 CP949 사본이며 결측·누락 시간을 그대로 보존합니다.
+학습 명령에서 `--csv`를 생략해도 최신 업로드 → 샘플 순으로 선택합니다.
+잘못된 업로드는 샘플로 숨기지 않고 오류를 반환합니다.
 로컬 번들은 `project/serving_app/models/solar/`의 `model.keras`, `scaler.json`, `metadata.json`에 저장됩니다.
 처음부터 소스에 포함된 주가 가중치·스케일러로 예측하지 않습니다.
 
@@ -98,14 +101,27 @@ MLFLOW_TRACKING_URI를 지정하면 학습·서빙·MLflow UI에서 같은 저�
   같은 합성 관측값을 과거 입력·정답·재학습에 일관되게 사용합니다.
 - 168시간 RMSE가 기존 모델의 임계값을 넘으면 자동 재학습합니다. 마지막 7일은 검증으로
   남기고, 새 모델이 기존 모델과 두 기준선보다 모두 좋을 때만 승격합니다.
-- 결과에는 배치 RMSE, 재학습 검증 RMSE, 승격 여부와 시뮬레이션 모델 버전이 표시됩니다.
+- 결과에는 배치 RMSE, 재학습 검증 RMSE, 승격 여부와 실행 후 운영 모델 버전이 표시됩니다.
   구간이나 운영 모델에 따라 감지·승격 결과가 달라지며, 성공을 강제로 만들지 않습니다.
 
-시뮬레이션은 매번 현재 운영 모델을 출발점으로 사용합니다. 원본 CSV와 운영 모델
-`JejuSolarPredictor`는 변경하지 않으며, 합성 데이터 모델은 **JejuSolarSimulator**의
-Production으로 등록하고 별도로 로딩·추론하여 검증합니다. 화면에서도 시뮬레이션으로
-표시합니다. 마지막 결과는 `runtime/solar_simulation.jsonl`에 저장해 새로고침 후 복원합니다.
-실제 관측 평가 지표와 재학습 승인 상태에는 시뮬레이션 결과를 섞지 않습니다.
+정상/합성 배치는 현재 운영 모델에서 평가하며, 원본 CSV는 수정하지 않습니다.
+검증을 통과하면 **JejuSolarPredictor Production과 실제 서빙 캐시를 함께 교체**합니다.
+학습 실패·게이트 미통과·후보 로딩 실패 시 기존 모델을 유지합니다.
+합성 여부와 원본 해시를 모델 메타데이터에 기록하며, 마지막 결과는
+`runtime/solar_simulation.jsonl`에서 새로고침 후 복원합니다.
+원본과 합성 관측의 감시 창은 분리합니다. 승격 후에는 새 모델의 학습·검증 종료 이후
+구간을 입력하세요. 기본 출력 제한 시나리오는 드리프트가 감지되어도 게이트에서
+탈락할 수 있으며 이는 정상적인 보호 동작입니다.
+
+CLI에서도 동일한 변환과 운영 파이프라인을 실행합니다.
+
+```bash
+uv run python project/scripts/simulate_drift.py --target both --scenario both
+```
+
+`--scenario normal|drift|both|replay`, `--target local|container|both`를 지원합니다.
+서버 하나가 실패해도 나머지를 실행하고 종료 코드는 1을 반환합니다.
+동일 원본 해시일 때만 데이터 비교 가능으로 표시하므로, 모델 버전도 결과에서 확인하세요.
 
 ```bash
 curl -H 'Content-Type: application/json' \
@@ -118,13 +134,14 @@ curl -H 'Content-Type: application/json' \
 
 ```bash
 uv run python project/scripts/simulate_drift.py \
-  --target local --start 2024-01-01T00:00:00 --limit 168
+  --target local --scenario replay --start 2024-01-01T00:00:00 --limit 168
 ```
 
 같은 기능을 대시보드의 **실제 과거 구간 리플레이** 또는 `POST /predict/batch-test`에서 사용할 수 있습니다.
 요청은 `{"start_timestamp":"2024-01-01T00:00:00","limit":168}` 형태입니다.
 `limit`는 유효한 정답 건수(최대 744)입니다. 결측 구간을 건너뛰므로 실제 경과시간은 더 길 수 있습니다.
-모델 학습·검증 종료 시각 이후만 평가하며, 재생 요청끼리는 기록을 섞지 않습니다.
+모델 학습·검증 종료 시각 이후만 평가하며, 같은 자료·모델의 신규 관측은 최근 168시간까지 누적합니다.
+겹치는 관측은 중복 집계하지 않고 이전 시점으로의 재생은 거절합니다.
 `project/runtime/solar_replay.jsonl`에 재생 ID, 자료 해시, 타깃 시각, 정답·예측·모델 버전을 저장합니다.
 단일 `/predict` 요청의 정답 자동 수집 기능은 없으며, 실시간 발전량 수집 연동은 별도입니다.
 
@@ -133,8 +150,8 @@ uv run python project/scripts/simulate_drift.py \
 개념 드리프트 판정이 아닙니다. `performance_degraded`는 원인 확인이 필요한 성능 저하 신호입니다.
 결측으로 관측이 부족하면 `insufficient_data`, 모델 기준이 없으면 `threshold_unavailable`입니다.
 
-재생은 자동으로 모델을 바꾸지 않습니다. 데이터 품질·기상 변화·설비 상태 등을 확인한 뒤
-대시보드에서 명시적으로 재학습합니다. `/retrain`의 `cutoff_timestamp`는 마지막 재생의
+성능 저하가 확인되면 자동으로 재학습·검증하고 통과한 후보만 운영 모델로 교체합니다.
+수동 재학습은 아직 자동 학습을 시도하지 않은 동일 관측에 한해 사용할 수 있습니다. `/retrain`의 `cutoff_timestamp`는 마지막 재생의
 마지막 정답 시각과 같아야 합니다. MLflow Production 모드, 동일 자료·모델 버전,
 성능 저하 판정을 요구합니다.
 재학습은 그 시각까지의 최근 90일만 읽고, 마지막 연속 7일은 검증으로 남깁니다.
@@ -147,17 +164,23 @@ uv run python project/scripts/simulate_drift.py \
 
 ## Docker
 
-기본 실행 모드는 MLflow Production입니다. 이미지 빌드 중 학습하지 않습니다.
-최초 실행 시 컨테이너의 영속 `solar-runtime` 볼륨에 모델을 학습·등록합니다.
-이미 해당 볼륨에 Production 모델이 있다면 초기 등록 명령은 생략합니다.
+기본 실행 모드는 MLflow Production이며 `AUTO_PREPARE=1`입니다.
+이미지 빌드 중 학습하지 않습니다. 최초 시작 때 영속 `solar-runtime` 볼륨이 비어 있으면
+최신 업로드 또는 포함된 제주 샘플로 학습·검증·등록하고 서비스를 시작합니다.
+후보 번들을 로딩하고 실제 예측한 뒤 Production으로 승격합니다. 게이트에서 탈락하면
+시작을 중단하고 오류를 남깁니다. 기존 Production이 있으면 재학습 없이 재사용합니다.
 
 ```bash
-docker compose -f project/serving_app/docker-compose.yml build
-docker compose -f project/serving_app/docker-compose.yml run --rm serving-app \
-  python serving_app/train_and_register.py \
-  --csv /app/data/uploads/solar_jeju_2019_2024.csv --epochs 20
-# 위 결과에서 promoted=true를 확인한 뒤 실행합니다.
-docker compose -f project/serving_app/docker-compose.yml up -d
+docker compose -f project/serving_app/docker-compose.yml up --build -d
+# 최초 실행은 학습 시간이 필요합니다.
+docker compose -f project/serving_app/docker-compose.yml logs -f serving-app
+```
+
+로컬에서도 자동 준비를 사용할 수 있습니다.
+
+```bash
+AUTO_PREPARE=1 MODEL_SOURCE=mlflow LOADING_MODE=eager uv run uvicorn \
+  serving_app.main:app --app-dir project --port 8077
 ```
 
 [컨테이너 대시보드](http://localhost:8099/)에서 `MODEL_SOURCE=mlflow`, 현재 운영 모델의
@@ -166,12 +189,13 @@ MLflow DB·모델 파일·평가 이력은 `solar-runtime` 볼륨에 함께 보�
 호스트의 MLflow 저장소와는 별도입니다. 호스트 DB에는 호스트 절대 경로가 기록되므로
 DB 파일만 복사해서 연결하지 마세요. `docker compose down -v`는 저장 볼륨도 삭제합니다.
 
-시작 시 Production 모델과 스케일러를 즉시 로딩하므로 등록이 없거나 파일이 손상되면
-시작에 실패합니다. 서버 재시작 후 Replay를 다시 실행하고, 성능 저하가 확인된 경우에만
-재학습을 요청하세요. 새 모델이 기존 모델과 기준선보다 좋아야 승격됩니다.
+시작 시 Production 모델과 스케일러를 즉시 로딩하므로 기존 파일이 손상되면
+자동으로 덮어쓰지 않고 시작에 실패합니다. 서버 재시작 시 메모리 감시 창은 초기화됩니다.
+새 관측을 평가하면 성능 저하 여부에 따라 자동 재학습합니다. 새 모델이 기존 모델과 기준선보다 좋아야 승격됩니다.
 
 기존 로컬 번들로 실행하려면 아래처럼 모드를 명시할 수 있습니다.
-로컬 번들은 읽기 전용으로 마운트하며 이 모드에서는 재학습이 차단됩니다.
+기존 로컬 번들은 읽기 전용으로 마운트합니다. 없으면 runtime/bootstrap-solar에 준비하며
+이 모드에서는 운영 재학습이 차단됩니다.
 
 ```bash
 MODEL_SOURCE=local docker compose -f project/serving_app/docker-compose.yml up -d
@@ -181,6 +205,7 @@ MODEL_SOURCE=local docker compose -f project/serving_app/docker-compose.yml up -
 
 ```bash
 uv run python -m unittest discover -s tests -v
+node tests/dashboard_ui.cjs
 uv run ruff check project tests
 uv run ruff format --check project tests
 ```

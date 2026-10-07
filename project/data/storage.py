@@ -5,8 +5,13 @@ from pathlib import Path
 UPLOAD_DIR = str(Path(__file__).resolve().parent / "uploads")
 
 
-def latest_upload(upload_dir: str = UPLOAD_DIR) -> str:
-    files = list(Path(upload_dir).glob("solar_*.csv"))
+SAMPLE_CSV = Path(__file__).resolve().parent / "sample_jeju_solar.csv"
+
+
+def latest_upload(upload_dir: str | None = None) -> str:
+    files = list(Path(upload_dir or UPLOAD_DIR).glob("solar_*.csv"))
     if not files:
-        raise FileNotFoundError("제주 태양광 CSV를 먼저 업로드하세요")
+        if SAMPLE_CSV.is_file():
+            return str(SAMPLE_CSV)
+        raise FileNotFoundError("제주 태양광 CSV를 업로드하거나 샘플을 준비하세요")
     return str(max(files, key=lambda p: p.stat().st_mtime_ns))

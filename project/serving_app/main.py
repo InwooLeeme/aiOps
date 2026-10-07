@@ -30,6 +30,10 @@ if not _aiops_logger.handlers:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if os.getenv("AUTO_PREPARE", "0") == "1":
+        from serving_app.bootstrap import prepare_service
+
+        prepare_service()
     if os.getenv("LOADING_MODE", "lazy") == "eager":
         model_loader.load_eager()
     else:

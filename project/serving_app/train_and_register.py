@@ -258,7 +258,11 @@ def _train(rows, epochs):
     return model, prepared, metadata, promoted
 
 
-def train_local(csv_path, epochs=BASE_EPOCHS, directory=None) -> dict:
+def train_local(csv_path=None, epochs=BASE_EPOCHS, directory=None) -> dict:
+    if csv_path is None:
+        from data.storage import latest_upload
+
+        csv_path = latest_upload()
     model, prepared, metadata, passed = _train(load_rows(csv_path), epochs)
     metadata["version"] = "solar-local"
     metadata = save_bundle(
@@ -336,16 +340,25 @@ def train_and_register(
     csv_path: str | None = None,
     rows: list[dict] | None = None,
     epochs: int | None = None,
+    *,
+    promote: bool = True,
 ) -> dict:
     if rows is None:
         if csv_path is None:
-            raise ValueError("학습할 제주 CSV 경로를 명시하세요")
+            from data.storage import latest_upload
+
+            csv_path = latest_upload()
         rows = load_rows(csv_path)
     model, prepared, metadata, passed = _train(
         rows, BASE_EPOCHS if epochs is None else epochs
     )
     return _log_and_register(
-        model, prepared["scaler"], metadata, passed, prepared["train"]["X"][:1]
+        model,
+        prepared["scaler"],
+        metadata,
+        passed,
+        prepared["train"]["X"][:1],
+        promote=promote,
     )
 
 
@@ -426,7 +439,7 @@ def fine_tune(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--csv", required=True)
+    parser.add_argument("--csv", help="생략하면 최신 업로드 또는 제주 샘플 사용")
     parser.add_argument("--epochs", type=int, default=BASE_EPOCHS)
     args = parser.parse_args()
     print(

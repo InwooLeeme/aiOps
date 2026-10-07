@@ -10,7 +10,7 @@ from data.features import (
     load_rows,
     validate_sequence,
 )
-from data.storage import UPLOAD_DIR, latest_upload
+from data.storage import SAMPLE_CSV, UPLOAD_DIR, latest_upload
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
 router = APIRouter(prefix="/data")
@@ -69,7 +69,7 @@ def preview():
         break
     return {
         "filename": path.name,
-        "source": "upload",
+        "source": "sample" if path.resolve() == SAMPLE_CSV.resolve() else "upload",
         **dataset_summary(rows),
         "example": example,
     }
