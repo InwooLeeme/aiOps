@@ -12,7 +12,12 @@ logger = logging.getLogger("solar_aiops")
 
 
 def check_and_trigger(
-    records: list[dict], threshold: float | None = None, *, rows=None, incumbent=None
+    records: list[dict],
+    threshold: float | None = None,
+    *,
+    rows=None,
+    incumbent=None,
+    metadata_extra=None,
 ) -> dict:
     result = assess_drift(records, threshold)
     result["retraining"] = None
@@ -35,11 +40,15 @@ def check_and_trigger(
         }
     else:
         cutoff = max(r["timestamp"] for r in records)
-        result["retraining"] = retrain_at(rows, cutoff, incumbent=incumbent)
+        result["retraining"] = retrain_at(
+            rows, cutoff, incumbent=incumbent, metadata_extra=metadata_extra
+        )
     return result
 
 
-def retrain_at(rows: list[dict], cutoff: str, *, incumbent=None) -> dict:
+def retrain_at(
+    rows: list[dict], cutoff: str, *, incumbent=None, metadata_extra=None
+) -> dict:
     from serving_app import model_loader
     from serving_app.train_and_register import fine_tune
 
@@ -54,7 +63,9 @@ def retrain_at(rows: list[dict], cutoff: str, *, incumbent=None) -> dict:
     incumbent = incumbent if incumbent is not None else model_loader.get_model()
     logger.info("[INFO] 자동 재학습 시작: 관측 종료=%s, 최근 90일", cutoff)
     try:
-        result = fine_tune(history, incumbent=incumbent, promote=False)
+        result = fine_tune(
+            history, incumbent=incumbent, promote=False, metadata_extra=metadata_extra
+        )
     except ValueError as exc:
         logger.warning("재학습 차단: %s", exc)
         return {"status": "blocked", "reason": str(exc), "promoted": False}

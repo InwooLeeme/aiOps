@@ -71,102 +71,133 @@ def replay(req: BatchTestRequest):
         raise HTTPException(409, "다른 이력 재생 또는 재학습이 진행 중입니다")
     try:
         model = current_model()
-        evaluated_until = max(
-            model.metadata.get("validation_end") or "",
-            model.metadata.get("training_end") or "",
-        )
-        if not evaluated_until or parse_timestamp(
-            req.start_timestamp
-        ) <= parse_timestamp(evaluated_until):
-            raise HTTPException(
-                422, "모델 학습·검증 종료 시각 이후의 이력만 평가할 수 있습니다"
-            )
         try:
-            path = latest_upload()
-            source = open_bytes(path)
+            source = open_bytes(latest_upload())
             rows = decode_csv(source)
         except (FileNotFoundError, ValueError) as exc:
             raise HTTPException(422, str(exc)) from exc
-        records = []
-        dataset_hash = hashlib.sha256(source).hexdigest()
-        identity = model_identity(model)
-        same_context = (
-            _last_replay.get("dataset_hash") == dataset_hash
-            and _last_replay.get("model_version") == identity
-        )
-        for window, target in sample_windows(rows):
-            if target["timestamp"] < req.start_timestamp:
-                continue
-            records.append(
-                {
-                    "timestamp": target["timestamp"],
-                    "region": "제주",
-                    "predicted": model.predict_one(window),
-                    "actual": target["generation_mwh"],
-                    "model_version": model_identity(model),
-                }
-            )
-            if len(records) >= req.limit:
-                break
-        if not records:
-            raise HTTPException(
-                422, "해당 기간에 결측 없는 72시간 입력과 다음 시간 정답이 없습니다"
-            )
-        if same_context and records[-1]["timestamp"] < _last_replay["cutoff"]:
-            raise HTTPException(
-                409, "이미 평가한 관측 시각보다 이전으로 재생할 수 없습니다"
-            )
-        previous_cutoff = _last_replay["cutoff"] if same_context else ""
-        fresh = [r for r in records if r["timestamp"] > previous_cutoff]
-        accumulated = (list(recent_predictions) if same_context else []) + fresh
-        accumulated = accumulated[-WINDOW_SIZE:]
-        replay_id = uuid.uuid4().hex
-        REPLAY_LOG.parent.mkdir(parents=True, exist_ok=True)
-        with REPLAY_LOG.open("a", encoding="utf-8") as stream:
-            for record in fresh:
-                stream.write(
-                    json.dumps(
-                        {
-                            **record,
-                            "replay_id": replay_id,
-                            "dataset_sha256": dataset_hash,
-                        },
-                        ensure_ascii=False,
-                    )
-                    + "\n"
-                )
-        threshold = model.metadata.get("drift_threshold_mwh")
-        if fresh:
-            recent_predictions[:] = accumulated
-            _last_replay.clear()
-            _last_replay.update(
-                cutoff=records[-1]["timestamp"],
-                dataset_hash=dataset_hash,
-                model_version=identity,
-                attempted=False,
-            )
-            check = check_and_trigger(
-                accumulated, threshold, rows=rows, incumbent=model
-            )
-            trained = check.get("retraining")
-            _last_replay.update(
-                check=check,
-                attempted=bool(trained)
-                and os.getenv("MODEL_SOURCE", "local").lower() == "mlflow",
-            )
-            if trained and trained.get("promoted"):
-                # 새 모델의 임계값으로 이전 모델의 오차를 평가하지 않는다.
-                recent_predictions.clear()
-        else:
-            check = {**_last_replay.get("check", assess_drift(accumulated, threshold))}
-        check = {**check, "new_count": len(fresh), "model_version": identity}
-        return BatchTestResponse(
-            predictions=[r["predicted"] for r in records],
-            records=records,
-            drift_check=check,
+        return evaluate_batch(
+            rows,
+            model,
+            req.start_timestamp,
+            req.limit,
+            hashlib.sha256(source).hexdigest(),
         )
     finally:
         _replay_lock.release()
+
+
+def evaluate_batch(
+    rows,
+    model,
+    start_timestamp,
+    limit,
+    dataset_hash,
+    *,
+    strict=False,
+    metadata_extra=None,
+):
+    """호출자가 공용 잠금을 보유한 상태에서 평가·누적·재학습한다."""
+    evaluated_until = max(
+        model.metadata.get("validation_end") or "",
+        model.metadata.get("training_end") or "",
+    )
+    if not evaluated_until or parse_timestamp(start_timestamp) <= parse_timestamp(
+        evaluated_until
+    ):
+        raise HTTPException(
+            422, "모델 학습·검증 종료 시각 이후의 이력만 평가할 수 있습니다"
+        )
+    records = []
+    identity = model_identity(model)
+    same_context = (
+        _last_replay.get("dataset_hash") == dataset_hash
+        and _last_replay.get("model_version") == identity
+    )
+    for window, target in sample_windows(rows):
+        if target["timestamp"] < start_timestamp:
+            continue
+        records.append(
+            {
+                "timestamp": target["timestamp"],
+                "region": "제주",
+                "predicted": model.predict_one(window),
+                "actual": target["generation_mwh"],
+                "model_version": model_identity(model),
+            }
+        )
+        if len(records) >= limit:
+            break
+    if not records:
+        raise HTTPException(
+            422, "해당 기간에 결측 없는 72시간 입력과 다음 시간 정답이 없습니다"
+        )
+    if strict and (
+        len(records) != 168
+        or records[0]["timestamp"] != start_timestamp
+        or not assess_drift(records, model.metadata.get("drift_threshold_mwh"))["ready"]
+    ):
+        raise HTTPException(
+            422, "시뮬레이션에는 결측 없는 연속 168시간 평가 구간이 필요합니다"
+        )
+    if same_context and records[-1]["timestamp"] < _last_replay["cutoff"]:
+        raise HTTPException(
+            409, "이미 평가한 관측 시각보다 이전으로 재생할 수 없습니다"
+        )
+    previous_cutoff = _last_replay["cutoff"] if same_context else ""
+    fresh = [r for r in records if r["timestamp"] > previous_cutoff]
+    accumulated = (list(recent_predictions) if same_context else []) + fresh
+    accumulated = accumulated[-WINDOW_SIZE:]
+    replay_id = uuid.uuid4().hex
+    REPLAY_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with REPLAY_LOG.open("a", encoding="utf-8") as stream:
+        for record in fresh:
+            stream.write(
+                json.dumps(
+                    {
+                        **record,
+                        "replay_id": replay_id,
+                        "dataset_sha256": dataset_hash,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+    threshold = model.metadata.get("drift_threshold_mwh")
+    if fresh:
+        recent_predictions[:] = accumulated
+        _last_replay.clear()
+        _last_replay.update(
+            cutoff=records[-1]["timestamp"],
+            dataset_hash=dataset_hash,
+            model_version=identity,
+            attempted=False,
+            synthetic=bool(metadata_extra),
+        )
+        check = check_and_trigger(
+            accumulated,
+            threshold,
+            rows=rows,
+            incumbent=model,
+            metadata_extra=metadata_extra,
+        )
+        trained = check.get("retraining")
+        _last_replay.update(
+            check=check,
+            attempted=bool(trained)
+            and os.getenv("MODEL_SOURCE", "local").lower() == "mlflow",
+        )
+        if trained and trained.get("promoted"):
+            # 새 모델의 임계값으로 이전 모델의 오차를 평가하지 않는다.
+            recent_predictions.clear()
+    else:
+        check = {**_last_replay.get("check", assess_drift(accumulated, threshold))}
+    check = {**check, "new_count": len(fresh), "model_version": identity}
+    return BatchTestResponse(
+        predictions=[r["predicted"] for r in records],
+        records=records,
+        drift_check=check,
+    )
 
 
 def open_bytes(path):
@@ -196,8 +227,13 @@ def simulate(req: SimulationRequest):
         model = current_model()
         try:
             path = latest_upload()
+            source = open_bytes(path)
             result = run_simulation(
-                load_rows(path), model, req.scenario, req.start_timestamp
+                decode_csv(source),
+                model,
+                req.scenario,
+                req.start_timestamp,
+                dataset_hash=hashlib.sha256(source).hexdigest(),
             )
         except (FileNotFoundError, ValueError) as exc:
             raise HTTPException(422, str(exc)) from exc
@@ -205,7 +241,7 @@ def simulate(req: SimulationRequest):
             exists=True,
             completed_at=time.time(),
             simulation_id=uuid.uuid4().hex,
-            dataset_sha256=hashlib.sha256(open_bytes(path)).hexdigest(),
+            dataset_sha256=hashlib.sha256(source).hexdigest(),
         )
         SIMULATION_LOG.parent.mkdir(parents=True, exist_ok=True)
         with SIMULATION_LOG.open("a", encoding="utf-8") as stream:
@@ -246,6 +282,11 @@ def retrain(req: RetrainRequest):
             return {
                 "status": "blocked",
                 "reason": "현재 모델 버전으로 이력을 다시 평가하세요",
+            }
+        if _last_replay.get("synthetic"):
+            return {
+                "status": "blocked",
+                "reason": "합성 배치는 시뮬레이션 버튼의 자동 재학습을 사용하세요",
             }
         path = latest_upload()
         if hashlib.sha256(open_bytes(path)).hexdigest() != _last_replay["dataset_hash"]:

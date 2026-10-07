@@ -128,7 +128,7 @@ async function loadMetrics() {
   sparkline("spark-latency",data.series.map((p)=>p.avg_latency_ms));
   sparkline("spark-success",data.series.map((p)=>p.success_rate));
   $("kpi-drift").textContent = data.drift.rmse === null ? "미실행" : energy(data.drift.rmse);
-  $("drift-caption").textContent = data.drift.count ? `최근 ${data.drift.count}건 · ${data.drift.ready ? "평가 가능" : "판정 대기"} · 임계값 ${energy(data.drift.threshold)}` : "Replay 탭에서 과거 구간 평가";
+  $("drift-caption").textContent = data.drift.count ? `최근 ${data.drift.count}건 · ${data.drift.ready ? "평가 가능" : "판정 대기"} · 임계값 ${energy(data.drift.threshold)}` : "Simulation 탭에서 과거 구간 평가";
 }
 async function loadModels() {
   const [data, health] = await Promise.all([api("/models/overview"),api("/health")]);
@@ -153,7 +153,10 @@ async function loadModels() {
 }
 async function loadEvents() {
   const events = await api("/events/recent");
-  $("recent-events").innerHTML = events.length ? events.slice(0,6).map((e)=>`<div class="event ${e.level === "WARNING" ? "warn" : ""}"><span class="event-icon" aria-hidden="true">${e.level === "WARNING" ? "!" : "i"}</span><div><p>${escapeHtml(e.message)}</p><small>${escapeHtml(relativeTime(e.timestamp))}</small></div></div>`).join("") : '<p class="empty">아직 기록된 이벤트가 없습니다.<br>Replay 탭에서 과거 구간을 평가해보세요.</p>';
+  $("recent-events").innerHTML = events.length ? events.slice(0,6).map((e)=>`<div class="event ${e.level === "WARNING" ? "warn" : ""}"><span class="event-icon" aria-hidden="true">${e.level === "WARNING" ? "!" : "i"}</span><div><p>${escapeHtml(e.message)}</p><small>${escapeHtml(relativeTime(e.timestamp))}</small></div></div>`).join("") : '<p class="empty">아직 기록된 이벤트가 없습니다.<br>Simulation 탭에서 과거 구간을 평가해보세요.</p>';
+}
+function trainingOutcome(trained) {
+  return ({promoted:"운영 모델 교체 완료",gate_rejected:"검증 게이트 미통과",activation_failed:"모델 활성화 실패",failed:"학습 실패",blocked:"재학습 조건 미충족"})[trained?.status] ?? "재학습 결과 확인 필요";
 }
 function renderPipeline() {
   let statuses = stages.map(()=>["idle","대기 중"]);
@@ -161,14 +164,15 @@ function renderPipeline() {
     const check=state.lastRun.check;
     const drift=check.status === "performance_degraded";
     statuses = [["ok","완료"],["ok","완료"],[check.ready ? (drift ? "warn" : "ok") : "idle",check.ready ? (drift ? "감지됨" : "정상") : "판정 대기"],["idle","별도 실행"],["idle","대기 중"],["idle","대기 중"],["idle","대기 중"]];
-    if (state.lastRun.kind === "retrain") {
-      statuses = [["ok","완료"],["idle","별도 평가"],["idle","별도 평가"],["ok","요청 완료"],["ok","학습 완료"],[check.promoted ? "ok" : "warn",check.promoted ? "등록 완료" : "게이트 미통과"],[check.promoted ? "ok" : "idle",check.promoted ? "승격 완료" : "기존 버전 유지"]];
-    }
-    if (state.lastRun.kind === "simulation") {
-      const trained=state.lastRun.retraining;
-      const completed=typeof trained?.promoted === "boolean";
-      statuses=[["ok","시뮬레이션"],["ok","168시간 평가"],[drift ? "warn" : "ok",drift ? "감지됨" : "정상"],[trained ? "ok" : "idle",trained ? "자동 요청" : "불필요"],[completed ? "ok" : "idle",completed ? "학습 완료" : trained ? "조건 미충족" : "미실행"],[trained?.promoted ? "ok" : "idle",trained?.promoted ? "시뮬레이션 등록" : completed ? "게이트 미통과" : "미실행"],[state.lastRun.reloadError ? "warn" : trained?.promoted ? "ok" : "idle",state.lastRun.reloadError ? "승격 후 로딩 실패" : trained?.promoted ? "시뮬레이션 승격" : "운영 모델 유지"]];
-    }
+    const trained=state.lastRun.kind === "retrain" ? check : state.lastRun.retraining ?? check.retraining;
+    if (trained) {
+      const trainedOk=["promoted","gate_rejected","activation_failed"].includes(trained.status);
+      statuses[3]=["ok","요청 완료"];
+      statuses[4]=[trainedOk ? "ok" : "warn",trainedOk ? "학습 완료" : trainingOutcome(trained)];
+      statuses[5]=[trained.promoted ? "ok" : "warn",trained.promoted ? "등록 완료" : trainingOutcome(trained)];
+      statuses[6]=[trained.promoted ? "ok" : "idle",trained.promoted ? "운영 모델 교체 완료" : "기존 버전 유지"];
+    } else if(check.ready) statuses[3]=["idle",drift ? "미실행" : "불필요"];
+
   }
   $("pipeline-run-badge").textContent = state.lastRun ? `마지막 실행 ${relativeTime(state.lastRun.ts)}` : "아직 실행 안 함";
   $("pipeline-track").innerHTML=stages.map(([icon,title,desc],i)=>`<div class="pipe-stage ${statuses[i][0]}"><div class="pipe-icon" aria-hidden="true">${icon}</div><div class="pipe-title">${title}</div><div class="pipe-desc">${desc}</div><div class="pipe-status">${statuses[i][1]}</div></div>`).join("");
@@ -206,7 +210,7 @@ async function sendBatch() {
   try {
     const data=await api("/predict/batch-test",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({start_timestamp:start,limit})});
     const check=data.drift_check ?? {};
-    state.lastRun={kind:"replay",check,ts:Date.now()/1000};renderPipeline();
+    state.lastRun={kind:"replay",check,retraining:check.retraining,ts:Date.now()/1000};renderPipeline();
     const latest = data.records?.at(-1)?.timestamp;
     if (latest) {
       $("retrain-cutoff").value = latest.slice(0,16);
@@ -218,6 +222,7 @@ async function sendBatch() {
     else if(check.status === "threshold_unavailable"){text="판정 대기 · 모델 검증 임계값이 없습니다";}
     else if(check.status === "insufficient_data"){text="판정 대기 · 최근 168시간의 완전한 예측 기록이 필요합니다";}
     else if(check.reason){text=`판정 대기 · ${check.reason}`;}
+    if(check.retraining){text=trainingOutcome(check.retraining);level=check.retraining.promoted ? "ok" : "warn";}
     $("drift-status").innerHTML=`${pill(text,level,true)} ${pill(`최근 ${number(check.count)}건 RMSE ${energy(check.rmse)}`)}`;
     showResult("drift-result",data);
   } catch(e) {$("drift-status").innerHTML=pill(`평가 실패${e.status ? ` (HTTP ${e.status})` : ""}`,"error",true);showResult("drift-result",e.data ?? {detail:e.message},true);}
@@ -228,14 +233,14 @@ function renderSimulation(data) {
   state.lastRun={kind:"simulation",check,retraining:trained,reloadError:data.reload_error,ts:data.completed_at ?? Date.now()/1000};
   renderPipeline();
   let text="정상 · 자동 재학습 불필요", level="ok";
-  if(trained?.promoted){text=`드리프트 감지 → 자동 재학습 완료 → 시뮬레이션 v${data.simulation_model_version} Production 승격${data.reload_error ? ' · 로딩 검증 실패: '+data.reload_error : '·로딩 완료'}`;level=data.reload_error ? "warn" : "ok";}
-  else if(typeof trained?.promoted === "boolean"){text="드리프트 감지 → 자동 재학습 완료 · 검증 미통과로 승격하지 않음";level="warn";}
-  else if(trained){text=`드리프트 감지 · 재학습 미실행: ${trained.reason ?? trained.status}`;level="warn";}
+  if(trained?.promoted){text=`자동 재학습 완료 → 운영 v${data.served_model_version} 승격·서빙 교체 완료`;}
+  else if(trained){text=`${trainingOutcome(trained)} · 기존 운영 모델 유지${trained.reason ? ': '+trained.reason : ''}`;level="warn";}
+
   $("simulation-status").innerHTML=pill(`[시뮬레이션] ${text}`,level,true);
   $("simulation-summary").innerHTML=[
     ["변형 전 기준 모델",`운영 v${data.base_model_version}`],
     ["배치 RMSE",energy(check.rmse)],["감지 임계값",energy(check.threshold)],
-    ["재학습 검증 RMSE",energy(trained?.rmse)],["시뮬레이션 모델",data.simulation_model_version ? `${data.model_name} v${data.simulation_model_version}` : "새 버전 없음"],
+    ["재학습 검증 RMSE",energy(trained?.rmse)],["실행 후 서빙 모델",`${data.model_name} v${data.served_model_version}`],
     ["데이터",data.scenario === "drift" ? "출력 제한 합성 데이터" : "원본 관측값"]
   ].map(([label,value])=>stat(label,value)).join("");
   showResult("simulation-result",data);
@@ -266,7 +271,7 @@ async function retrain() {
     const data=await api("/retrain",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({cutoff_timestamp:cutoff})});
     if (typeof data.promoted === "boolean") {
       state.lastRun={kind:"retrain",check:data,ts:Date.now()/1000};renderPipeline();
-      $("retrain-status").innerHTML=pill(data.promoted ? "재학습 완료 · Production 승격" : "재학습 완료 · 검증 게이트 미통과",data.promoted ? "ok" : "warn",true);
+      $("retrain-status").innerHTML=pill(trainingOutcome(data),data.promoted ? "ok" : "warn",true);
     } else {
       $("retrain-status").innerHTML=pill(`재학습 미실행 · ${data.reason ?? data.status ?? "응답을 확인하세요"}`,"warn",true);
     }

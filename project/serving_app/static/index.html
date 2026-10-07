@@ -41,7 +41,7 @@
       <div class="dashboard-grid">
         <div class="main-column">
           <article class="card">
-            <div class="section-head-row"><div class="section-head"><h2>예측 성능 모니터링과 재학습 파이프라인</h2><p>배치 전송으로 성능 저하가 감지되면 자동 재학습합니다. 검증을 통과한 시뮬레이션 모델은 JejuSolarSimulator의 Production으로 승격합니다.</p></div><span id="pipeline-run-badge" class="pill neutral">아직 실행 안 함</span></div>
+            <div class="section-head-row"><div class="section-head"><h2>예측 성능 모니터링과 재학습 파이프라인</h2><p>배치 전송으로 성능 저하가 감지되면 자동 재학습합니다. 검증을 통과한 후보는 JejuSolarPredictor의 Production으로 승격하고 실제 예측 모델을 교체합니다.</p></div><span id="pipeline-run-badge" class="pill neutral">아직 실행 안 함</span></div>
             <div class="pipeline-track" id="pipeline-track"></div>
           </article>
           <article class="card history-card">
@@ -70,7 +70,7 @@
         <div id="prediction-status" class="action-status" role="status"></div><pre id="prediction-result" class="result-box" hidden></pre>
       </article>
       <article class="card">
-        <div class="section-head"><h2>Day3 — 드리프트 시뮬레이션 · 자동 재학습</h2><p>정상 배치는 원본 관측값을, 드리프트 배치는 08~18시 짝수 시간의 발전량을 10%로 제한한 합성 데이터를 사용합니다. 감지 → 자동 재학습 → 검증 → 승격을 한 번에 실행합니다.</p><p>원본 CSV와 운영 모델은 유지합니다. 시뮬레이션 모델은 <code>JejuSolarSimulator</code>에 별도로 등록하며, 매 실행은 현재 운영 모델에서 시작합니다.</p></div>
+        <div class="section-head"><h2>Day3 — 드리프트 시뮬레이션 · 자동 재학습</h2><p>정상 배치는 원본 관측값을, 드리프트 배치는 08~18시 짝수 시간의 발전량을 10%로 제한한 합성 데이터를 사용합니다. 감지 → 자동 재학습 → 검증 → 승격을 한 번에 실행합니다.</p><p>원본 CSV는 보존합니다. 검증을 통과하면 <code>JejuSolarPredictor</code> 운영 모델이 교체됩니다. 통과하지 못하면 기존 모델을 유지합니다. 승격 후에는 새 모델의 학습·검증 종료 이후 구간을 선택하세요.</p></div>
         <div class="replay-controls"><label>시뮬레이션 시작 시각 (KST)<input id="simulation-start" type="datetime-local" step="3600" value="2024-05-23T17:00" /></label><span>연속 168시간 평가 · 기본 구간은 제주 데이터용 시연 구간입니다.</span></div>
         <div class="btn-row"><button class="btn primary inference-action" id="send-normal">정상 배치 전송</button><button class="btn danger inference-action" id="send-drift">드리프트 배치 전송</button></div>
         <div id="simulation-status" class="action-status" role="status">정상 배치로 비교한 다음 드리프트 배치를 전송하세요.</div>
