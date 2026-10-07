@@ -16,7 +16,7 @@ def configure_tracking() -> None:
 
 def configure_experiment() -> None:
     configure_tracking()
-    name = "HAIC"
+    name = "JejuSolar"
     if mlflow.get_experiment_by_name(name) is None:
         if mlflow.get_tracking_uri() == DEFAULT_TRACKING_URI:
             ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)

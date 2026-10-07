@@ -1,16 +1,4 @@
-"""
-FastAPI 앱 진입점.
-
-Day1: app 생성, 라우터(predict, health) 등록, lifespan에서 로딩 모드에 따라 모델 준비
-Day2: data 라우터 등록 (HAIC 데이터 업로드)
-Day3: "aiops" 로거를 logs/aiops.log 파일로 연결(로깅 설정) + logs 라우터(로그 파일 조회)
-등록
-
-정적 대시보드: serving_app/static/index.html → /health · /predict · /predict/batch-test,
-/data/upload · /logs 를 호출하는 확인용 화면입니다. API 라우터를 먼저 등록한 뒤
-StaticFiles를 "/"에 마지막으로 mount해야, /predict 같은 API 경로가 정적 파일보다
-먼저 매칭됩니다(Starlette는 등록 순서대로 라우트를 검사합니다).
-"""
+"""제주 태양광 예측 API와 운영 대시보드 진입점."""
 
 import logging
 import os
@@ -24,16 +12,16 @@ from serving_app.config import LOG_DIR
 from serving_app.request_metrics import record_prediction_request
 from serving_app.routers import dashboard, data, health, logs, predict
 
-# monitoring/retrain_trigger.py가 쓰는 "aiops" 로거를 logs/aiops.log 파일에 연결한다.
+# 태양광 운영 로그를 기존 주가 실험과 분리한다.
 # (routers/logs.py가 같은 디렉토리를 읽기 전용으로 노출한다.) 여기서 이 로거 하나만
 # 직접 설정하므로, uvicorn 자체 로깅 설정과 충돌하지 않는다.
 _LOG_DIR = str(LOG_DIR)
 os.makedirs(_LOG_DIR, exist_ok=True)
-_aiops_logger = logging.getLogger("aiops")
+_aiops_logger = logging.getLogger("solar_aiops")
 _aiops_logger.setLevel(logging.INFO)
 if not _aiops_logger.handlers:
     _handler = logging.FileHandler(
-        os.path.join(_LOG_DIR, "aiops.log"), encoding="utf-8"
+        os.path.join(_LOG_DIR, "solar_aiops.log"), encoding="utf-8"
     )
     _handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
     _aiops_logger.addHandler(_handler)
@@ -49,12 +37,12 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="HAIC Serving & AIOps", lifespan=lifespan)
+app = FastAPI(title="Jeju Solar Forecast & Model Operations", lifespan=lifespan)
 app.middleware("http")(record_prediction_request)
 
 app.include_router(predict.router)
 app.include_router(health.router)
-app.include_router(data.router)  # HAIC 데이터 업로드
+app.include_router(data.router)  # 태양광 데이터 업로드
 app.include_router(logs.router)  # 대시보드: 재학습 로그 파일 조회
 app.include_router(dashboard.router)
 

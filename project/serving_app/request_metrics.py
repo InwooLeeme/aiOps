@@ -17,7 +17,7 @@ _write_lock = threading.Lock()
 
 def log_path(request: Request) -> Path:
     return Path(
-        getattr(request.app.state, "request_log_path", LOG_DIR / "requests.log")
+        getattr(request.app.state, "request_log_path", LOG_DIR / "solar_requests.log")
     )
 
 

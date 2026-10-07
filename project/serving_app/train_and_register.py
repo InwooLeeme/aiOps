@@ -1,34 +1,25 @@
-"""
-Day2: MLflow로 HAIC LSTM 모델을 학습 -> 기록(Tracking) -> 게이트 검증 -> 등록(Registry)
--> Production 승격.
-Day3: 드리프트 감지 후 Production 가중치에서 이어서 학습하는 fine-tuning 재학습.
+"""시간순 분리, 검증 기준선 게이트, 동일 버전 아티팩트로 태양광 LSTM을 학습합니다."""
 
-실습 시나리오 (94번 슬라이드를 LSTM 버전으로 재구성):
-    1) HAIC 데이터로 base 모델 학습(100 epoch) -> RMSE 확인 (게이트 미달 가능)
-    2) 게이트($4.00) 통과 시 Production으로 승격
-    3) (Day3) 드리프트 감지 시 Production 가중치에서 warm-start -> 최근 1개월 데이터로
-       10 epoch만 fine-tuning (처음부터 다시 학습하지 않음 - 21거래일로는 스크래치
-       학습이 불안정)
-
-실행:
-    (대시보드에서 HAIC CSV를 먼저 업로드하세요 - data/sample_haic_prices.csv가
-    예시입니다)
-    python scripts/train_baseline_v1.py     # 최초 1회 (scaler.pkl 생성)
-    python serving_app/train_and_register.py
-"""
-
+import argparse
+import json
+import math
 import os
 import sys
+import tempfile
+from datetime import datetime, timedelta
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import mlflow
-import mlflow.tensorflow
 import numpy as np
-from data.features import HAICScaler, build_sequences, load_rows, train_test_split
-from data.storage import latest_upload
-from mlflow.tracking import MlflowClient
-from tensorflow import keras
+from data.features import (
+    FEATURE_COLUMNS,
+    SEQ_LEN,
+    SolarScaler,
+    load_rows,
+    sample_windows,
+)
 
 from serving_app.config import (
     BASE_EPOCHS,
@@ -37,132 +28,402 @@ from serving_app.config import (
     MODEL_DIR,
     MODEL_NAME,
     PROJECT_ROOT,
-    RMSE_GATE,
     SEED,
 )
-from serving_app.lstm_model import build_model
-from serving_app.tracking import configure_experiment
-
-# 시드 고정: LSTM 가중치 초기화가 랜덤이라 시드 없이는 실행마다 RMSE가 크게 흔들려
-# (관찰치: 2.22~5.29) 게이트($4.00) 통과 여부가 운에 좌우됩니다. numpy/tensorflow/python
-# random을 한 번에 고정해 재현 가능한 학습 결과를 보장합니다.
-keras.utils.set_random_seed(SEED)
-SCALER_PATH = MODEL_DIR / "scaler.pkl"
 
 
-def rmse(y_true, y_pred) -> float:
-    return float(np.sqrt(np.mean((np.array(y_true) - np.array(y_pred)) ** 2)))
+def evaluate_predictions(y_true, y_pred, timestamps) -> dict:
+    truth, prediction = np.asarray(y_true, dtype=float), np.asarray(y_pred, dtype=float)
+    if not len(truth) or len(truth) != len(prediction) or len(truth) != len(timestamps):
+        raise ValueError("평가 정답·예측·시간의 길이가 같고 비어 있지 않아야 합니다")
+    errors = prediction - truth
+    if not np.isfinite(errors).all():
+        raise ValueError("평가에 유한하지 않은 발전량이 있습니다")
+    daytime = np.asarray(
+        [6 <= datetime.fromisoformat(t).hour <= 18 for t in timestamps]
+    )
+    return {
+        "mae": float(np.mean(np.abs(errors))),
+        "rmse": float(np.sqrt(np.mean(errors**2))),
+        "daytime_mae": float(np.mean(np.abs(errors[daytime])))
+        if daytime.any()
+        else None,
+        "daytime_rmse": float(np.sqrt(np.mean(errors[daytime] ** 2)))
+        if daytime.any()
+        else None,
+        "n_samples": len(truth),
+        "daytime_n_samples": int(daytime.sum()),
+    }
 
 
-def _prepare(rows: list[dict], scaler: HAICScaler):
-    X, y = build_sequences(rows, scaler)
-    X_train, y_train, X_test, y_test = train_test_split(X, y)
-    X_train = np.array(X_train, dtype="float32")
-    X_test = np.array(X_test, dtype="float32")
-    y_train_scaled = np.array([scaler.scale_close(v) for v in y_train], dtype="float32")
-    return X_train, y_train_scaled, X_test, y_test
+def passes_gate(
+    candidate: float, baselines: dict, incumbent: float | None = None
+) -> bool:
+    limits = list(baselines.values())
+    if incumbent is not None:
+        limits.append(incumbent)
+    return bool(
+        limits
+        and all(math.isfinite(v) and v >= 0 for v in [candidate, *limits])
+        and candidate < min(limits)
+    )
 
 
-def _register_if_gate_passed(model, run_id: str, score: float) -> dict:
-    result = {"run_id": run_id, "rmse": score, "promoted": False}
-    if score <= RMSE_GATE:
-        v = mlflow.register_model(f"runs:/{run_id}/model", MODEL_NAME)
-        MlflowClient().transition_model_version_stage(
-            name=MODEL_NAME,
-            version=v.version,
-            stage="Production",
-            archive_existing_versions=True,
+def _partition(windows, scaler):
+    # Transform each historical point once: adjacent 72-hour windows share most rows.
+    transformed = {}
+    inputs, targets, timestamps, persistence, previous_day = [], [], [], [], []
+    for window, target in windows:
+        for point in window:
+            key = point["timestamp"]
+            if key not in transformed:
+                transformed[key] = scaler.transform_point(point)
+        inputs.append([transformed[p["timestamp"]] for p in window])
+        targets.append(target["generation_mwh"])
+        timestamps.append(target["timestamp"])
+        persistence.append(window[-1]["generation_mwh"])
+        previous_day.append(window[-24]["generation_mwh"])
+    return {
+        "X": np.asarray(inputs, dtype="float32"),
+        "y": np.asarray(targets),
+        "timestamps": timestamps,
+        "persistence": persistence,
+        "previous_day": previous_day,
+    }
+
+
+def prepare_training_data(rows: list[dict]) -> dict:
+    rows = sorted(rows, key=lambda r: r["timestamp"])
+    fitting = [r for r in rows if r["timestamp"] < "2023-01-01"]
+    if not fitting:
+        raise ValueError("2023년 이전 학습 데이터가 필요합니다")
+    scaler = SolarScaler().fit(fitting)
+    groups = {"train": [], "validation": [], "test": []}
+    for window, target in sample_windows(rows):
+        timestamp = target["timestamp"]
+        split = (
+            "train"
+            if timestamp < "2023-01-01"
+            else "validation"
+            if timestamp < "2024-01-01"
+            else "test"
+            if timestamp < "2025-01-01"
+            else None
         )
-        result["promoted"] = True
-        result["version"] = v.version
-        print(
-            f"[GATE PASSED] rmse={score:.2f} -> "
-            f"{MODEL_NAME} v{v.version} promoted to Production"
+        if split:
+            groups[split].append((window, target))
+    if any(not groups[key] for key in ("train", "validation", "test")):
+        raise ValueError(
+            "2023년 이전 학습·2023년 검증·2024년 테스트 시퀀스가 모두 필요합니다"
         )
-    else:
-        print(
-            f"[GATE FAILED] rmse={score:.4f} > {RMSE_GATE:.2f} -> "
-            "배포 차단, 기존 Production 유지"
+    return {
+        "scaler": scaler,
+        **{name: _partition(group, scaler) for name, group in groups.items()},
+    }
+
+
+def _predictions(model, partition, scaler):
+    values = model.predict(partition["X"], batch_size=256, verbose=0).reshape(-1)
+    if not np.isfinite(values).all():
+        raise ValueError("모델이 유한한 발전량을 반환하지 않았습니다")
+    return [max(0.0, scaler.inverse_target(float(value))) for value in values]
+
+
+def _evaluate(model, partition, scaler):
+    args = (
+        partition["y"],
+        _predictions(model, partition, scaler),
+        partition["timestamps"],
+    )
+    result = {"model": evaluate_predictions(*args)}
+    for name in ("persistence", "previous_day"):
+        result[name] = evaluate_predictions(
+            partition["y"], partition[name], partition["timestamps"]
         )
     return result
 
 
-def train_and_register(
-    csv_path: str | None = None, rows: list[dict] | None = None
+def _fit(model, scaler, train, validation, epochs):
+    from tensorflow import keras
+
+    if epochs < 1:
+        raise ValueError("epochs는 1 이상이어야 합니다")
+    model.fit(
+        train["X"],
+        np.asarray([scaler.scale_target(v) for v in train["y"]], dtype="float32"),
+        validation_data=(
+            validation["X"],
+            np.asarray(
+                [scaler.scale_target(v) for v in validation["y"]], dtype="float32"
+            ),
+        ),
+        epochs=epochs,
+        batch_size=128,
+        shuffle=False,
+        verbose=0,
+        callbacks=[
+            keras.callbacks.EarlyStopping(
+                monitor="val_loss", patience=3, restore_best_weights=True
+            )
+        ],
+    )
+
+
+def _metadata(train, validation, metrics, epochs, mode):
+    return {
+        "training_end": train["timestamps"][-1],
+        "training_start": train["timestamps"][0],
+        "validation_start": validation["timestamps"][0],
+        "validation_end": validation["timestamps"][-1],
+        "error_threshold_mwh": max(1e-6, 1.5 * metrics["validation"]["model"]["rmse"]),
+        "drift_threshold_mwh": max(1e-6, 1.5 * metrics["validation"]["model"]["rmse"]),
+        "validation_metrics": metrics["validation"]["model"],
+        "gate_baseline_rmse": min(
+            metrics["validation"][name]["rmse"]
+            for name in ("persistence", "previous_day")
+        ),
+        "threshold_rule": "1.5 * validation RMSE; minimum 1e-6 MWh",
+        "daytime_definition": "06:00–18:59 KST clock-hour proxy, not measured daylight",
+        "feature_columns": FEATURE_COLUMNS,
+        "seq_len": SEQ_LEN,
+        "unit": "MWh",
+        "target": "next_hour_generation_mwh",
+        "region": "제주",
+        "timezone": "Asia/Seoul",
+        "metrics": metrics,
+        "seed": SEED,
+        "epochs": epochs,
+        "mode": mode,
+    }
+
+
+def save_bundle(model, scaler, metadata: dict, directory: Path) -> dict:
+    from serving_app.model_loader import artifact_hash
+
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    # Metadata is committed last; hashes make interrupted or mixed bundles fail closed.
+    with tempfile.TemporaryDirectory(dir=directory.parent) as temporary:
+        temp = Path(temporary)
+        model.save(temp / "model.keras")
+        scaler.save(temp / "scaler.json")
+        metadata = {
+            **metadata,
+            "feature_columns": FEATURE_COLUMNS,
+            "seq_len": SEQ_LEN,
+            "unit": "MWh",
+        }
+        metadata["artifact_sha256"] = {
+            name: artifact_hash(temp / name) for name in ("model.keras", "scaler.json")
+        }
+        if metadata.get("version") == "solar-local":
+            metadata["version"] = (
+                f"solar-local-{metadata['artifact_sha256']['model.keras'][:12]}"
+            )
+        (temp / "metadata.json").write_text(
+            json.dumps(metadata, ensure_ascii=False, indent=2, allow_nan=False),
+            encoding="utf-8",
+        )
+        for name in ("model.keras", "scaler.json", "metadata.json"):
+            os.replace(temp / name, directory / name)
+    return metadata
+
+
+def _train(rows, epochs):
+    from tensorflow import keras
+
+    from serving_app.lstm_model import build_model
+
+    keras.utils.set_random_seed(SEED)
+    prepared = prepare_training_data(rows)
+    model = build_model()
+    _fit(model, prepared["scaler"], prepared["train"], prepared["validation"], epochs)
+    validation = _evaluate(model, prepared["validation"], prepared["scaler"])
+    promoted = passes_gate(
+        validation["model"]["rmse"],
+        {k: validation[k]["rmse"] for k in ("persistence", "previous_day")},
+    )
+    # Test is only reported after fitting and the validation-only gate decision.
+    metrics = {
+        "validation": validation,
+        "test": _evaluate(model, prepared["test"], prepared["scaler"]),
+    }
+    metadata = _metadata(
+        prepared["train"], prepared["validation"], metrics, epochs, "scratch"
+    )
+    metadata["scaler_fit_end"] = max(
+        r["timestamp"] for r in rows if r["timestamp"] < "2023-01-01"
+    )
+    metadata["gate_passed"] = promoted
+    return model, prepared, metadata, promoted
+
+
+def train_local(csv_path, epochs=BASE_EPOCHS, directory=None) -> dict:
+    model, prepared, metadata, passed = _train(load_rows(csv_path), epochs)
+    metadata["version"] = "solar-local"
+    metadata = save_bundle(
+        model, prepared["scaler"], metadata, directory or MODEL_DIR / "solar"
+    )
+    return {
+        "metrics": metadata["metrics"],
+        "promoted": False,
+        "gate_passed": passed,
+        "version": metadata["version"],
+        "metadata": metadata,
+    }
+
+
+def _log_and_register(
+    model, scaler, metadata, passed, example, model_name=MODEL_NAME
 ) -> dict:
-    """Day2: 처음부터(scratch) 학습. 데이터가 충분한 base 학습에서만 사용합니다.
+    import mlflow
+    import mlflow.tensorflow
+    from mlflow.tracking import MlflowClient
 
-    csv_path를 지정하지 않으면 data/uploads/에 가장 최근 업로드된 CSV를 사용합니다
-    (data/storage.py의 latest_upload() - 대시보드에서 업로드한 파일).
-    """
-    if rows is None:
-        rows = load_rows(csv_path or latest_upload())
+    from serving_app.tracking import configure_experiment
+
     configure_experiment()
-    scaler = HAICScaler.load(SCALER_PATH)
-    X_train, y_train_scaled, X_test, y_test = _prepare(rows, scaler)
-
-    with mlflow.start_run(run_name="base-train"):
-        model = build_model()
-        model.fit(X_train, y_train_scaled, epochs=BASE_EPOCHS, verbose=0)
-
-        preds = [
-            scaler.inverse_close(p) for p in model.predict(X_test, verbose=0).flatten()
-        ]
-        score = rmse(y_test, preds)
-
-        mlflow.log_param("mode", "scratch")
-        mlflow.log_param("epochs", BASE_EPOCHS)
-        mlflow.log_param("seed", SEED)
-        mlflow.log_param("seq_len", 20)
-        mlflow.log_param("n_rows", len(rows))
-        mlflow.log_metric("rmse", score)
+    with mlflow.start_run(run_name=f"solar-{metadata['mode']}") as run:
+        mlflow.log_params(
+            {key: metadata[key] for key in ("epochs", "seed", "seq_len", "mode")}
+        )
+        mlflow.set_tags(
+            {
+                "simulation": str(metadata.get("simulation", False)).lower(),
+                "target_model": model_name,
+            }
+        )
+        for split, methods in metadata["metrics"].items():
+            for method, scores in methods.items():
+                for metric, value in scores.items():
+                    if value is not None:
+                        mlflow.log_metric(f"{split}_{method}_{metric}", value)
+        mlflow.log_metric("rmse", metadata["metrics"]["validation"]["model"]["rmse"])
+        mlflow.log_metric("error_threshold_mwh", metadata["error_threshold_mwh"])
         mlflow.tensorflow.log_model(
             model,
             name="model",
-            input_example=X_train[:1],
+            input_example=example,
             pip_requirements=str(PROJECT_ROOT / "requirements.txt"),
         )
+        with tempfile.TemporaryDirectory() as temp:
+            save_bundle(model, scaler, metadata, Path(temp))
+            mlflow.log_artifacts(temp, "bundle")
+        result = {
+            "run_id": run.info.run_id,
+            "metrics": metadata["metrics"],
+            "rmse": metadata["metrics"]["validation"]["model"]["rmse"],
+            "promoted": False,
+            "version": None,
+        }
+        if passed:
+            version = mlflow.register_model(
+                f"runs:/{run.info.run_id}/model", model_name
+            )
+            MlflowClient().transition_model_version_stage(
+                name=model_name,
+                version=version.version,
+                stage="Production",
+                archive_existing_versions=True,
+            )
+            result.update(promoted=True, version=str(version.version))
+        return result
 
-        return _register_if_gate_passed(model, mlflow.active_run().info.run_id, score)
+
+def train_and_register(
+    csv_path: str | None = None,
+    rows: list[dict] | None = None,
+    epochs: int | None = None,
+) -> dict:
+    if rows is None:
+        if csv_path is None:
+            raise ValueError("학습할 제주 CSV 경로를 명시하세요")
+        rows = load_rows(csv_path)
+    model, prepared, metadata, passed = _train(
+        rows, BASE_EPOCHS if epochs is None else epochs
+    )
+    return _log_and_register(
+        model, prepared["scaler"], metadata, passed, prepared["train"]["X"][:1]
+    )
 
 
-def fine_tune(rows: list[dict]) -> dict:
-    """
-    Day3: 현재 Production 모델 가중치에서 이어서(warm start), 넘겨받은 rows(최근
-    데이터)로
-    짧게 fine-tuning합니다. rows가 적을 때(예: 최근 1개월)도 스크래치 학습보다 훨씬
-    안정적입니다.
-    """
-    scaler = HAICScaler.load(SCALER_PATH)
-    configure_experiment()
-    X_train, y_train_scaled, X_test, y_test = _prepare(rows, scaler)
+def fine_tune(
+    rows: list[dict],
+    epochs: int = FINE_TUNE_EPOCHS,
+    *,
+    incumbent=None,
+    model_name=MODEL_NAME,
+    metadata_extra=None,
+) -> dict:
+    """주어진 과거 관측치의 마지막 7일을 검증으로 남겨 incumbent와 비교합니다."""
+    from tensorflow import keras
 
-    model = mlflow.tensorflow.load_model(f"models:/{MODEL_NAME}/Production")
+    from serving_app.model_loader import get_model
+
+    ordered = sorted(rows, key=lambda r: r["timestamp"])
+    if len(ordered) < 30 * 24:
+        raise ValueError("재학습에는 최소 30일(720시간)의 과거 관측치가 필요합니다")
+    end = datetime.fromisoformat(ordered[-1]["timestamp"])
+    if end > datetime.now(ZoneInfo("Asia/Seoul")).replace(tzinfo=None):
+        raise ValueError("미래 시각의 관측치로 재학습할 수 없습니다")
+    earliest = (end - timedelta(days=90) + timedelta(hours=1)).isoformat()
+    ordered = [row for row in ordered if row["timestamp"] >= earliest]
+    cutoff = (end - timedelta(days=7) + timedelta(hours=1)).isoformat()
+    incumbent = incumbent if incumbent is not None else get_model()
+    windows = list(sample_windows(ordered))
+    train = _partition(
+        [(w, t) for w, t in windows if t["timestamp"] < cutoff], incumbent.scaler
+    )
+    validation = _partition(
+        [(w, t) for w, t in windows if t["timestamp"] >= cutoff], incumbent.scaler
+    )
+    if not len(train["y"]) or len(validation["y"]) < 7 * 24:
+        raise ValueError(
+            "재학습에는 완전한 학습 구간과 연속된 마지막 7일 검증 구간이 필요합니다"
+        )
+    selection_end = max(
+        incumbent.metadata.get("training_end", ""),
+        incumbent.metadata.get("validation_end", ""),
+    )
+    if cutoff <= selection_end:
+        raise ValueError("재학습 검증 구간은 기존 모델 학습·검증 종료 이후여야 합니다")
+    keras.utils.set_random_seed(SEED)
+    model = keras.models.clone_model(incumbent._keras_model)
+    model.set_weights(incumbent._keras_model.get_weights())
     model.compile(
         optimizer=keras.optimizers.Adam(learning_rate=FINE_TUNE_LR), loss="mse"
     )
-
-    with mlflow.start_run(run_name="fine-tune"):
-        model.fit(X_train, y_train_scaled, epochs=FINE_TUNE_EPOCHS, verbose=0)
-
-        preds = [
-            scaler.inverse_close(p) for p in model.predict(X_test, verbose=0).flatten()
-        ]
-        score = rmse(y_test, preds)
-
-        mlflow.log_param("mode", "fine-tune")
-        mlflow.log_param("epochs", FINE_TUNE_EPOCHS)
-        mlflow.log_param("n_rows", len(rows))
-        mlflow.log_metric("rmse", score)
-        mlflow.tensorflow.log_model(
-            model,
-            name="model",
-            input_example=X_train[:1],
-            pip_requirements=str(PROJECT_ROOT / "requirements.txt"),
-        )
-
-        return _register_if_gate_passed(model, mlflow.active_run().info.run_id, score)
+    _fit(model, incumbent.scaler, train, validation, epochs)
+    scores = _evaluate(model, validation, incumbent.scaler)
+    scores["incumbent"] = _evaluate(
+        incumbent._keras_model, validation, incumbent.scaler
+    )["model"]
+    passed = passes_gate(
+        scores["model"]["rmse"],
+        {k: scores[k]["rmse"] for k in ("persistence", "previous_day")},
+        scores["incumbent"]["rmse"],
+    )
+    metadata = _metadata(train, validation, {"validation": scores}, epochs, "fine-tune")
+    metadata.update(
+        scaler_fit_end=incumbent.metadata.get("scaler_fit_end"),
+        parent_version=incumbent.registry_version or incumbent.version,
+        gate_passed=passed,
+    )
+    metadata.update(metadata_extra or {})
+    return _log_and_register(
+        model, incumbent.scaler, metadata, passed, train["X"][:1], model_name=model_name
+    )
 
 
 if __name__ == "__main__":
-    train_and_register()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--csv", required=True)
+    parser.add_argument("--epochs", type=int, default=BASE_EPOCHS)
+    args = parser.parse_args()
+    print(
+        json.dumps(
+            train_and_register(args.csv, epochs=args.epochs),
+            ensure_ascii=False,
+            indent=2,
+        )
+    )

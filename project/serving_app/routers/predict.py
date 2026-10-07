@@ -1,117 +1,229 @@
-"""
-[Day1 → Day3] 예측 API  —  serving_app/routers/predict.py
-【실습용】 ___ (밑줄 3개)만 채우세요. 채울 곳은 [빈칸 N] 으로 표시되어 있습니다.
-   ___ 가 남은 채 실행하면 "name '___' is not defined" 에러가 나며, 그 줄이 채울
-   곳입니다.
+"""태양광 다음 시간 예측, 과거 이력 재생, 관측 시점으로 제한한 재학습."""
 
-■ 이 파일이 하는 일 (한 줄 요약)
-   외부 요청을 받아 모델에게 전달하고, 결과를 돌려주는 "창구"입니다.
-   계산은 직접 하지 않고, 모델(model_loader)과 감시 도구(retrain_trigger)에게 맡깁니다.
+import hashlib
+import json
+import math
+import os
+import threading
+import time
+import uuid
+from collections import deque
+from datetime import timedelta
 
-■ 엔드포인트
-   [Day1] POST /predict : 20일치 데이터 → 다음날 종가 1개 (완성 — 읽고 흐름만
-   이해하세요)
-   [Day3] POST /predict/batch-test  : 긴 가격 목록 → 여러 번 예측 → 드리프트 검사
-
-■ 이 파일의 빈칸 : [빈칸 6]  (batch_test 의 슬라이딩 윈도우)
-"""
-
-from data.features import SEQ_LEN  # = 20
-from fastapi import APIRouter
+from data.features import load_rows, parse_timestamp, sample_windows
+from data.storage import latest_upload
+from fastapi import APIRouter, HTTPException
 
 from serving_app import model_loader
-from serving_app.monitoring.retrain_trigger import check_and_trigger
+from serving_app.config import RUNTIME_DIR
+from serving_app.monitoring.retrain_trigger import check_and_trigger, retrain_at
 from serving_app.schemas import (
     BatchTestRequest,
     BatchTestResponse,
     PredictRequest,
     PredictResponse,
+    RetrainRequest,
+    SimulationRequest,
 )
 
 router = APIRouter()
-
-# (Day3) 최근 예측 기록을 모아 두는 목록. 예: [{"predicted": 161.2, "actual": 163.0},
-# ...]
-# 드리프트 판단은 "최근 21건"(drift_detector.py 의 WINDOW_SIZE)만 보므로 21개까지만
-# 유지합니다.
 recent_predictions: list[dict] = []
+REPLAY_LOG = RUNTIME_DIR / "solar_replay.jsonl"
+SIMULATION_LOG = RUNTIME_DIR / "solar_simulation.jsonl"
+_replay_lock = threading.Lock()
+_last_replay: dict = {}
 
-# (Day3) 시뮬레이션은 종가만 보내므로, 거래량은 이 값으로 고정해서 채웁니다.
-SIMULATED_VOLUME = 1_200_000
+
+def current_model():
+    try:
+        return model_loader.get_model()
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(503, f"태양광 모델을 먼저 학습·준비하세요: {exc}") from exc
+
+
+def model_identity(model):
+    return str(model.registry_version or model.version)
 
 
 @router.post("/predict", response_model=PredictResponse)
 def predict(req: PredictRequest):
-    """
-    [Day1] 다음날 종가 예측  (완성)
-    받는 것  : {"sequence": [{"close": 160.0, "volume": 1200000}, ... 20개]}
-               20개가 아니면 schemas.py 가 알아서 422 에러를 돌려줍니다.
-    돌려줄 것: {"predicted_close": 161.37, "model_version": "v1-local"}
-
-    흐름: 모델 가져오기(get_model) → dict 목록으로 변환 → predict_one → 응답 포장
-    핵심 계산은 모두 model_loader.predict_one() 안에 있습니다. ([빈칸 2], [빈칸 3])
-    """
-    model = model_loader.get_model()
+    model = current_model()
     sequence = [p.model_dump() for p in req.sequence]
-    predicted_close = model.predict_one(sequence)
+    try:
+        value = model.predict_one(sequence)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if not math.isfinite(value):
+        raise HTTPException(503, "모델이 유효한 발전량을 반환하지 않았습니다")
+    target = parse_timestamp(sequence[-1]["timestamp"]) + timedelta(hours=1)
     return PredictResponse(
-        predicted_close=round(predicted_close, 2), model_version=model.version
+        predicted_generation_mwh=round(value, 5),
+        target_timestamp=target.isoformat(),
+        region="제주",
+        model_version=model_identity(model),
     )
 
 
 @router.post("/predict/batch-test", response_model=BatchTestResponse)
-def batch_test(req: BatchTestRequest):
-    """
-    [Day3] 드리프트 시뮬레이션
-    받는 것 : {"prices": [165.0, 166.2, ... 41개]} (scripts/simulate_drift.py 가 보냄)
-    돌려줄 것: {"predictions": [예측값 21개], "drift_check": {"status": "ok"} 또는
-    재학습 결과}
+def replay(req: BatchTestRequest):
+    if not _replay_lock.acquire(blocking=False):
+        raise HTTPException(409, "다른 이력 재생 또는 재학습이 진행 중입니다")
+    try:
+        model = current_model()
+        evaluated_until = model.metadata.get("validation_end") or model.metadata.get(
+            "training_end"
+        )
+        if evaluated_until is None or parse_timestamp(
+            req.start_timestamp
+        ) <= parse_timestamp(evaluated_until):
+            raise HTTPException(
+                422, "모델 학습·검증 종료 시각 이후의 이력만 평가할 수 있습니다"
+            )
+        try:
+            path = latest_upload()
+            rows = load_rows(path)
+        except (FileNotFoundError, ValueError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+        records = []
+        # 새 재생은 독립된 평가다. 이전 배치와 중복·역순 데이터를 합치지 않는다.
+        for window, target in sample_windows(rows):
+            if target["timestamp"] < req.start_timestamp:
+                continue
+            records.append(
+                {
+                    "timestamp": target["timestamp"],
+                    "region": "제주",
+                    "predicted": model.predict_one(window),
+                    "actual": target["generation_mwh"],
+                    "model_version": model_identity(model),
+                }
+            )
+            if len(records) >= req.limit:
+                break
+        if not records:
+            raise HTTPException(
+                422, "해당 기간에 결측 없는 72시간 입력과 다음 시간 정답이 없습니다"
+            )
+        threshold = model.metadata.get("drift_threshold_mwh")
+        check = check_and_trigger(records, threshold)
+        dataset_hash = hashlib.sha256(open_bytes(path)).hexdigest()
+        replay_id = uuid.uuid4().hex
+        REPLAY_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with REPLAY_LOG.open("a", encoding="utf-8") as stream:
+            for record in records:
+                stream.write(
+                    json.dumps(
+                        {
+                            **record,
+                            "replay_id": replay_id,
+                            "dataset_sha256": dataset_hash,
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+        recent_predictions[:] = records[-168:]
+        _last_replay.clear()
+        _last_replay.update(
+            {
+                "cutoff": records[-1]["timestamp"],
+                "dataset_hash": dataset_hash,
+                "model_version": model_identity(model),
+                "check": check,
+            }
+        )
+        return BatchTestResponse(
+            predictions=[r["predicted"] for r in records],
+            records=records,
+            drift_check=check,
+        )
+    finally:
+        _replay_lock.release()
 
-    ■ 핵심 아이디어: 슬라이딩 윈도우 (20칸짜리 창문을 한 칸씩 밀기)
-      가격 41개가 들어오면, 20개씩 잘라 "그다음 날"을 예측하고 실제 값과 비교합니다.
 
-        i=0 : [p0  ~ p19] → 예측   vs  실제 p20
-        i=1 : [p1  ~ p20] → 예측   vs  실제 p21
-        ...
-        i=20: [p20 ~ p39] → 예측   vs  실제 p40
-        → 총 41 - 20 = 21번 예측 = 드리프트 판단에 필요한 21건이 딱 채워집니다.
+def open_bytes(path):
+    from pathlib import Path
 
-    확인 방법
-      python scripts/simulate_drift.py
-        [normal]          drift_check = {'status': 'ok'}
-        [drift_injection] drift_check = {'status': 'retrain_triggered', 'promoted':
-        True, ...}
-      /docs 에서 직접 호출할 때는 predictions 가 (가격 개수 - 20)개인지 확인하세요.
-    """
-    model = model_loader.get_model()
-    predictions: list[float] = []
+    return Path(path).read_bytes()
 
-    prices = req.prices
-    for i in range(len(prices) - SEQ_LEN):
-        # ════════════════════════════ [빈칸 6] ════════════════════════════
-        # i번째 창문(window)의 시작·끝 위치와, 그 창문 바로 다음 날(actual)의 위치를
-        # 채우세요. (i 와 SEQ_LEN 으로)
-        # (위 docstring 의 그림에서 i=0 일 때 무엇이 창문이고 무엇이 실제 값인지 먼저
-        # 확인)
-        #
-        #   생각해 볼 질문
-        #     · 파이썬 슬라이싱 prices[a:b] 는 b 를 포함하나요?
-        # · 실제 값을 한 칸 앞(창문의 마지막 날)으로 잡으면, 모델은 무엇을 "맞힌" 셈이
-        # 될까요?
-        # · 반대로 창문을 한 칸 더 길게 잡아서 실제 값이 창문 안에 들어가면 RMSE는
-        # 어떻게 될까요?
-        window = prices[i : i + SEQ_LEN]
-        sequence = [{"close": p, "volume": SIMULATED_VOLUME} for p in window]
-        pred = model.predict_one(sequence)
-        actual = prices[i + SEQ_LEN]  # 창문 바로 다음 날
-        predictions.append(pred)
-        recent_predictions.append({"predicted": pred, "actual": actual})
 
-    # 최근 21건만 남기기 — 오래된 기록까지 섞이면 "지금" 상태를 판단할 수 없습니다.
-    # (recent_predictions = ... 로 쓰면 함수 안의 새 변수가 되므로, [:] 로 목록 내용을
-    # 바꿉니다)
-    recent_predictions[:] = recent_predictions[-21:]  # WINDOW_SIZE 유지
+@router.get("/simulation/status")
+def simulation_status():
+    if not SIMULATION_LOG.is_file():
+        return {"exists": False}
+    with SIMULATION_LOG.open(encoding="utf-8") as stream:
+        last = deque(stream, maxlen=1)
+    return json.loads(last[0]) if last else {"exists": False}
 
-    # 드리프트 판단·재학습은 retrain_trigger.py 가 합니다. 여기서는 넘겨주기만!
-    drift_check = check_and_trigger(recent_predictions)
-    return BatchTestResponse(predictions=predictions, drift_check=drift_check)
+
+@router.post("/simulation/run")
+def simulate(req: SimulationRequest):
+    from serving_app.monitoring.simulation import run_simulation
+
+    if not _replay_lock.acquire(blocking=False):
+        raise HTTPException(409, "다른 이력 재생 또는 재학습이 진행 중입니다")
+    try:
+        if os.getenv("MODEL_SOURCE", "local") != "mlflow":
+            raise HTTPException(422, "시뮬레이션은 MODEL_SOURCE=mlflow에서 실행하세요")
+        model = current_model()
+        try:
+            path = latest_upload()
+            result = run_simulation(
+                load_rows(path), model, req.scenario, req.start_timestamp
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+        result.update(
+            exists=True,
+            completed_at=time.time(),
+            simulation_id=uuid.uuid4().hex,
+            dataset_sha256=hashlib.sha256(open_bytes(path)).hexdigest(),
+        )
+        SIMULATION_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with SIMULATION_LOG.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(result, ensure_ascii=False, allow_nan=False) + "\n")
+        return result
+    finally:
+        _replay_lock.release()
+
+
+@router.post("/retrain")
+def retrain(req: RetrainRequest):
+    if not _replay_lock.acquire(blocking=False):
+        raise HTTPException(409, "다른 이력 재생 또는 재학습이 진행 중입니다")
+    try:
+        if not _last_replay or req.cutoff_timestamp != _last_replay["cutoff"]:
+            raise HTTPException(
+                422, "재학습 기준은 마지막으로 평가한 실제 관측 시각과 같아야 합니다"
+            )
+        if os.getenv("MODEL_SOURCE", "local") != "mlflow":
+            return {
+                "status": "blocked",
+                "reason": "MLflow Production 모델 등록 후 "
+                "MODEL_SOURCE=mlflow로 실행하세요",
+            }
+        if _last_replay["check"]["status"] != "performance_degraded":
+            return {
+                "status": "blocked",
+                "reason": "최근 이력에서 지속적인 성능 저하가 확인되지 않았습니다",
+            }
+        model = current_model()
+        if model_identity(model) != _last_replay["model_version"]:
+            return {
+                "status": "blocked",
+                "reason": "현재 모델 버전으로 이력을 다시 평가하세요",
+            }
+        path = latest_upload()
+        if hashlib.sha256(open_bytes(path)).hexdigest() != _last_replay["dataset_hash"]:
+            raise HTTPException(
+                422, "데이터가 바뀌었습니다. 새 CSV로 이력을 다시 평가하세요"
+            )
+        try:
+            result = retrain_at(load_rows(path), req.cutoff_timestamp)
+        except ValueError as exc:
+            return {"status": "blocked", "reason": str(exc)}
+        _last_replay.clear()
+        recent_predictions.clear()
+        return {"status": "retrain_completed", **result}
+    finally:
+        _replay_lock.release()

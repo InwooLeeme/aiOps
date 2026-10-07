@@ -8,16 +8,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from data.features import SEQ_LEN
+from data.features import FEATURE_COLUMNS, SEQ_LEN
 from fastapi import APIRouter, Request
 from mlflow.tracking import MlflowClient
 from sqlalchemy.engine import make_url
 
 from serving_app import config, model_loader
 from serving_app.monitoring.drift_detector import (
-    RMSE_THRESHOLD,
     WINDOW_SIZE,
-    compute_rmse,
+    assess_drift,
 )
 from serving_app.request_metrics import log_path, summarize
 from serving_app.routers.predict import recent_predictions
@@ -25,26 +24,33 @@ from serving_app.routers.predict import recent_predictions
 router = APIRouter()
 
 
+def model_metadata() -> dict:
+    return getattr(model_loader._model_cache, "metadata", {}) or {}
+
+
+def finite_metric(value):
+    return value if isinstance(value, (int, float)) and math.isfinite(value) else None
+
+
 @router.get("/metrics/summary")
 def metrics_summary(request: Request, window: Literal["5m", "1h", "6h", "24h"] = "5m"):
     result = summarize(log_path(request), window)
-    recent = list(recent_predictions)
-    result["drift"] = {
-        "count": len(recent),
-        "rmse": compute_rmse(recent) if recent else None,
-        "ready": len(recent) >= WINDOW_SIZE,
-        "threshold": RMSE_THRESHOLD,
-    }
+    threshold = finite_metric(model_metadata().get("drift_threshold_mwh"))
+    result["drift"] = assess_drift(list(recent_predictions), threshold)
     return result
 
 
 @router.get("/system/info")
 def system_info():
+    metadata = model_metadata()
     return {
         "seq_len": SEQ_LEN,
-        "rmse_gate": config.RMSE_GATE,
+        "n_features": len(FEATURE_COLUMNS),
+        "unit": "MWh",
+        "horizon_hours": 1,
+        "rmse_gate": finite_metric(metadata.get("gate_baseline_rmse")),
         "window_size": WINDOW_SIZE,
-        "rmse_threshold": RMSE_THRESHOLD,
+        "rmse_threshold": finite_metric(metadata.get("drift_threshold_mwh")),
         "base_epochs": config.BASE_EPOCHS,
         "fine_tune_epochs": config.FINE_TUNE_EPOCHS,
         "fine_tune_lr": config.FINE_TUNE_LR,
@@ -86,8 +92,11 @@ def models_overview():
     if cached is not None:
         result["served_model"] = {
             "version": registry_version or cached.version,
-            "rmse": None,
-            "mode": None,
+            "rmse": finite_metric(
+                model_metadata().get("validation_metrics", {}).get("rmse")
+            ),
+            "mode": model_metadata().get("mode"),
+            "gate_passed": model_metadata().get("gate_passed"),
             "stage": "Local" if source == "local" else "Unknown",
             "created_at": None,
         }
@@ -96,7 +105,7 @@ def models_overview():
         database = make_url(uri).database if uri.startswith("sqlite:") else None
         if database and database != ":memory:" and not Path(database).is_file():
             result["message"] = (
-                "MLflow 저장소가 없습니다. Day2 학습과 모델 등록을 먼저 실행하세요."
+                "MLflow 저장소가 없습니다. 태양광 모델 학습과 등록을 먼저 실행하세요."
             )
             return result
         client = MlflowClient(tracking_uri=uri)
@@ -121,7 +130,7 @@ def models_overview():
             result["served_model"] = version_info(client, served)
         if not versions:
             result["message"] = (
-                "등록된 HAIC 모델이 없습니다. Day2 학습을 먼저 실행하세요."
+                "등록된 태양광 모델이 없습니다. 모델 학습을 먼저 실행하세요."
             )
     except Exception:
         # 조회 실패가 모델 서빙이나 다른 화면을 중단하지 않도록 상태를 표시합니다.
@@ -136,7 +145,7 @@ def models_overview():
 
 @router.get("/events/recent")
 def recent_events():
-    path = config.LOG_DIR / "aiops.log"
+    path = config.LOG_DIR / "solar_aiops.log"
     if not path.is_file():
         return []
     pattern = re.compile(

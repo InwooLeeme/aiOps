@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AIOps · HAIC 운영 대시보드</title>
+  <title>AIOps · 제주 태양광 운영 대시보드</title>
   <link rel="icon" href="/favicon.ico" />
   <link rel="stylesheet" href="/dashboard.css" />
   <script src="/dashboard.js" defer></script>
@@ -12,7 +12,7 @@
   <header class="topnav">
     <a class="brand" href="#dashboard" aria-label="AIOps 대시보드">
       <span class="brand-mark"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M2 12h4l2-7 4 14 3-10 2 3h5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg></span>
-      <span class="brand-text"><strong>AIOps</strong><span>HAIC ML Pipeline for Reliable Service</span></span>
+      <span class="brand-text"><strong>AIOps</strong><span>Jeju Solar Forecast · Hourly MWh</span></span>
     </a>
     <nav class="tabs" role="tablist" aria-label="운영 메뉴">
       <button id="tab-dashboard" role="tab" aria-controls="dashboard" aria-selected="true" data-tab="dashboard">Dashboard</button>
@@ -35,17 +35,17 @@
           <div class="kpi"><h3>평균 응답시간 (Latency)</h3><strong id="kpi-latency">—</strong><div class="sparkline" id="spark-latency"></div><small class="window-caption">최근 5분</small></div>
           <div class="kpi"><h3>성공률 (Success Rate)</h3><strong id="kpi-success">—</strong><div class="sparkline" id="spark-success"></div><small class="window-caption">최근 5분</small></div>
           <div class="kpi"><h3>모델 성능 (RMSE)</h3><strong id="kpi-rmse">—</strong><div class="sparkline" id="spark-rmse"></div><small>MLflow 등록 버전별 추이</small></div>
-          <div class="kpi"><h3>드리프트 점수</h3><strong id="kpi-drift">미실행</strong><div class="sparkline"></div><small id="drift-caption">Simulation 탭에서 배치 전송</small></div>
+          <div class="kpi"><h3>최근 예측 오차 (MWh)</h3><strong id="kpi-drift">미실행</strong><div class="sparkline"></div><small id="drift-caption">Simulation 탭에서 과거 구간 평가</small></div>
         </div>
       </article>
       <div class="dashboard-grid">
         <div class="main-column">
           <article class="card">
-            <div class="section-head-row"><div class="section-head"><h2>드리프트 감지 기반 재학습 파이프라인</h2><p>Simulation 탭에서 보낸 요청의 처리 결과입니다. 드리프트 감지 시 재학습하며, 게이트 통과 시 Production으로 승격합니다.</p></div><span id="pipeline-run-badge" class="pill neutral">아직 실행 안 함</span></div>
+            <div class="section-head-row"><div class="section-head"><h2>예측 성능 모니터링과 재학습 파이프라인</h2><p>배치 전송으로 성능 저하가 감지되면 자동 재학습합니다. 검증을 통과한 시뮬레이션 모델은 JejuSolarSimulator의 Production으로 승격합니다.</p></div><span id="pipeline-run-badge" class="pill neutral">아직 실행 안 함</span></div>
             <div class="pipeline-track" id="pipeline-track"></div>
           </article>
           <article class="card history-card">
-            <div class="section-head"><h2>재학습 이력</h2><p>MLflow Model Registry에 등록된 HAIC_Predictor 버전과 실제 스테이지를 보여줍니다.</p></div>
+            <div class="section-head"><h2>재학습 이력</h2><p>MLflow Model Registry에 등록된 JejuSolarPredictor 버전과 실제 스테이지를 보여줍니다.</p></div>
             <div id="registry-message" class="inline-note" hidden></div>
             <div class="table-wrap"><table><thead><tr><th>버전</th><th>등록 시각</th><th>모드</th><th>RMSE</th><th>스테이지</th></tr></thead><tbody id="model-history"><tr><td colspan="5" class="table-empty">모델 이력을 불러오는 중입니다.</td></tr></tbody></table></div>
           </article>
@@ -53,7 +53,7 @@
         <aside class="side-column">
           <article class="card model-card">
             <div class="section-head-row"><h2>현재 운영 모델</h2><span id="model-health" class="pill neutral">확인 중</span></div>
-            <div class="model-name">HAIC_Predictor <span id="current-version" class="pill neutral">—</span></div>
+            <div class="model-name"><span id="current-model-name">JejuSolarPredictor</span> <span id="current-version" class="pill neutral">—</span></div>
             <dl class="model-details"><div><dt>스테이지</dt><dd id="current-stage">—</dd></div><div><dt>학습 방식</dt><dd id="current-mode">—</dd></div><div><dt>RMSE</dt><dd id="current-rmse">—</dd></div><div><dt>등록 시각</dt><dd id="current-time">—</dd></div></dl>
             <p id="model-notice" class="inline-note" hidden></p>
             <button class="btn secondary" id="refresh-models">새로고침</button>
@@ -64,15 +64,30 @@
     </section>
     <section id="simulation" role="tabpanel" aria-labelledby="tab-simulation" hidden>
       <article class="card">
-        <div class="section-head"><h2>Day1 — 다음날 종가 예측</h2><p>최근 <code id="sequence-length">20</code> 거래일의 종가·거래량을 JSON으로 보냅니다. 현재 데이터의 최근 구간을 불러오거나 직접 값을 수정할 수 있습니다.</p></div>
+        <div class="section-head"><h2>Day1 — 다음 1시간 태양광 발전량 예측</h2><p>최근 <code id="sequence-length">72</code>시간의 제주 발전량·설비용량·기상 관측값으로 다음 1시간 발전량(MWh)을 예측합니다. 입력 시각은 한국 표준시(KST)이며 미래 기상 관측값은 사용하지 않습니다.</p></div>
         <label class="sr-only" for="prediction-input">예측 요청 JSON</label><textarea id="prediction-input" spellcheck="false" aria-describedby="prediction-status"></textarea>
-        <div class="btn-row"><button class="btn secondary" id="regenerate-example">예시 데이터 다시 생성</button><button class="btn primary inference-action" id="run-prediction">예측 실행</button></div>
+        <div class="btn-row"><button class="btn secondary" id="regenerate-example">실제 데이터 구간 불러오기</button><button class="btn primary inference-action" id="run-prediction">예측 실행</button></div>
         <div id="prediction-status" class="action-status" role="status"></div><pre id="prediction-result" class="result-box" hidden></pre>
       </article>
       <article class="card">
-        <div class="section-head"><h2>Day3 — 드리프트 시뮬레이션</h2><p>일별 수익률 기반 랜덤워크로 정상·드리프트 배치를 만들어 전송합니다. 결과는 실제 RMSE로 판단하며, 재학습에는 서버에 최신 업로드된 CSV를 사용합니다.</p></div>
+        <div class="section-head"><h2>Day3 — 드리프트 시뮬레이션 · 자동 재학습</h2><p>정상 배치는 원본 관측값을, 드리프트 배치는 08~18시 짝수 시간의 발전량을 10%로 제한한 합성 데이터를 사용합니다. 감지 → 자동 재학습 → 검증 → 승격을 한 번에 실행합니다.</p><p>원본 CSV와 운영 모델은 유지합니다. 시뮬레이션 모델은 <code>JejuSolarSimulator</code>에 별도로 등록하며, 매 실행은 현재 운영 모델에서 시작합니다.</p></div>
+        <div class="replay-controls"><label>시뮬레이션 시작 시각 (KST)<input id="simulation-start" type="datetime-local" step="3600" value="2024-05-23T17:00" /></label><span>연속 168시간 평가 · 기본 구간은 제주 데이터용 시연 구간입니다.</span></div>
         <div class="btn-row"><button class="btn primary inference-action" id="send-normal">정상 배치 전송</button><button class="btn danger inference-action" id="send-drift">드리프트 배치 전송</button></div>
+        <div id="simulation-status" class="action-status" role="status">정상 배치로 비교한 다음 드리프트 배치를 전송하세요.</div>
+        <div id="simulation-summary" class="stat-grid three"></div>
+        <details><summary>시뮬레이션 상세 결과</summary><pre id="simulation-result" class="result-box" hidden></pre></details>
+      </article>
+      <article class="card">
+        <div class="section-head"><h2>실제 과거 구간 리플레이</h2><p>업로드한 제주 데이터의 예측 대상 시각부터 순서대로 모델 성능을 평가합니다. 학습·검증 이후 구간(기본 2024년부터)을 선택하세요. 누락 구간은 제외하고 최근 168시간의 RMSE를 검증 데이터에서 정한 임계값과 비교합니다.</p></div>
+        <div class="replay-controls"><label>예측 시작 시각 (KST)<input id="replay-start" type="datetime-local" step="3600" /></label><label>평가 건수<input id="replay-limit" type="number" min="1" max="744" value="168" /></label></div>
+        <div class="btn-row"><button class="btn primary inference-action" id="send-replay">과거 구간 평가</button></div>
         <div id="drift-status" class="action-status" role="status"></div><pre id="drift-result" class="result-box" hidden></pre>
+      </article>
+      <article class="card">
+        <div class="section-head"><h2>시간 경계를 지정한 재학습</h2><p>최근 리플레이의 마지막 평가 시각까지 모델을 학습·검증합니다. 종료 시각은 평가 결과로 자동 입력되며, 이후 구간은 평가용으로 남겨둡니다.</p></div>
+        <div class="replay-controls"><label>학습 종료 시각 (KST)<input id="retrain-cutoff" type="datetime-local" step="3600" readonly /></label></div>
+        <div class="btn-row"><button class="btn secondary inference-action" id="run-retrain">재학습 실행</button></div>
+        <div id="retrain-status" class="action-status" role="status"></div><pre id="retrain-result" class="result-box" hidden></pre>
       </article>
       <article class="card">
         <div class="section-head-row"><div class="section-head"><h2>지표 API 상태</h2><p>예측 요청의 평균 응답시간·오류 비율·요청 수를 실제 집계합니다. 오류 비율은 0~1 범위입니다.</p></div><label class="auto-refresh"><input type="checkbox" id="auto-refresh" checked /> 5초마다 자동 새로고침</label></div>
@@ -82,19 +97,19 @@
     </section>
     <section id="datasets" role="tabpanel" aria-labelledby="tab-datasets" hidden>
       <article class="card">
-        <div class="section-head"><h2>HAIC 데이터셋</h2><p id="dataset-description">최신 업로드 데이터의 통계를 불러오는 중입니다.</p></div>
+        <div class="section-head"><h2>제주 태양광 데이터셋</h2><p id="dataset-description">최신 업로드 데이터의 통계를 불러오는 중입니다.</p></div>
         <div class="stat-grid six" id="dataset-stats"></div><div class="btn-row"><button class="btn secondary" id="refresh-datasets">새로고침</button></div>
       </article>
       <article class="card">
-        <div class="section-head"><h2>데이터 업로드</h2><p>날짜·종가·거래량 컬럼을 가진 UTF-8 CSV를 업로드합니다. 최소 <span id="minimum-rows">41</span>행이 필요하며, 다음 학습부터 최신 파일을 사용합니다.</p></div>
+        <div class="section-head"><h2>데이터 업로드</h2><p>공공데이터 원본 한글 컬럼(CP949) 또는 정규화한 UTF-8 CSV를 업로드합니다. 발전량은 MWh, 설비용량은 MW입니다. 1건 예측에는 연속 <span id="minimum-rows">72</span>시간의 관측값이 필요합니다.</p></div>
         <div class="upload-row"><label class="sr-only" for="upload-input">CSV 파일 선택</label><input type="file" id="upload-input" accept=".csv,text/csv" /><button class="btn primary" id="upload-file">업로드</button></div><div id="upload-status" class="action-status" role="status"></div>
       </article>
-      <article class="card"><div class="section-head"><h2>참조 데이터</h2><p>제공된 HAIC 샘플은 종가와 거래량을 포함하는 756행의 실습용 시세입니다. 업로드 데이터가 없을 때 화면과 예측 입력의 예제로 사용합니다. 모델 학습 전에 CSV를 업로드하세요.</p></div></article>
+      <article class="card"><div class="section-head"><h2>참조 데이터</h2><p>한국동서발전이 제공한 제주 시간별 태양광 발전량 및 기상 데이터를 사용합니다. 제주 지역의 시간별 발전량 합계를 예측하며, 야간 발전량 0은 실제 관측값으로 유지합니다. 누락된 시간은 임의로 채우지 않습니다.</p></div></article>
     </section>
     <section id="system" role="tabpanel" aria-labelledby="tab-system" hidden>
-      <article class="card"><div class="section-head"><h2>시스템 설정</h2><p>서버가 실제로 사용 중인 환경변수와 학습·드리프트 설정입니다. 이 화면은 조회용입니다.</p></div><div class="stat-grid system-grid" id="system-stats"></div><div class="btn-row"><button class="btn secondary" id="refresh-system">새로고침</button></div></article>
+      <article class="card"><div class="section-head"><h2>시스템 설정</h2><p>서버가 실제로 사용 중인 환경변수와 학습·성능 모니터링 설정입니다. 이 화면은 조회용입니다.</p></div><div class="stat-grid system-grid" id="system-stats"></div><div class="btn-row"><button class="btn secondary" id="refresh-system">새로고침</button></div></article>
     </section>
-    <footer>HAIC AIOps 실습 · Day1~3 운영 대시보드</footer>
+    <footer>제주 태양광 AIOps 실습 · Day1~3 운영 대시보드</footer>
   </main>
 </body>
 </html>

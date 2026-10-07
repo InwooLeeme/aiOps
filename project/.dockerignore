@@ -1,6 +1,7 @@
 runtime/
 logs/
-__pycache__/
+data/uploads/
+serving_app/models/
 **/__pycache__/
 *.pyc
 *.db

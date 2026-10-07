@@ -1,13 +1,4 @@
-"""
-대시보드의 "재학습 로그" 패널용 - MLflow Registry를 조회하는 별도 이력 API 대신,
-monitoring/retrain_trigger.py의 "aiops" 로거가 그대로 기록하는 logs/aiops.log
-파일을 읽기 전용으로 노출한다. 새 학습/승격 로직은 없다 (logging 설정은
-serving_app/main.py에서 앱 시작 시 한 번만 구성한다).
-
-드리프트 감지("[WARN] drift detected") -> 재학습 트리거("[INFO] retrain triggered") ->
-게이트 통과("[OK] new_rmse=...")가 실제로 이 파일에 순서대로 쌓이는지 확인하는 것이
-Day3 실습의 검증 포인트다.
-"""
+"""태양광 서비스 운영 로그의 읽기 전용 조회."""
 
 import os
 
@@ -27,7 +18,7 @@ def list_logs():
     files = []
     for name in sorted(os.listdir(LOG_DIR)):
         path = os.path.join(LOG_DIR, name)
-        if os.path.isfile(path):
+        if name.startswith("solar_") and os.path.isfile(path):
             files.append({"name": name, "size": os.path.getsize(path)})
     return files
 
@@ -35,7 +26,7 @@ def list_logs():
 @router.get("/{filename}")
 def read_log(filename: str):
     # 경로 조작(디렉토리 탈출) 방지: 순수 파일명만 허용
-    if filename != os.path.basename(filename):
+    if filename != os.path.basename(filename) or not filename.startswith("solar_"):
         raise HTTPException(status_code=400, detail="잘못된 파일명입니다")
 
     path = os.path.join(LOG_DIR, filename)

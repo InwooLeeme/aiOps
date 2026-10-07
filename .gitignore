@@ -24,6 +24,7 @@ logs/*.log
 project/runtime/
 project/logs/*.log
 project/data/uploads/*.csv
+project/serving_app/models/solar/
 *.db
 *.db-shm
 *.db-wal

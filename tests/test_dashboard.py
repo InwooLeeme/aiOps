@@ -4,6 +4,7 @@ import sys
 import tempfile
 import time
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -11,10 +12,11 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "project"))
 
 import mlflow
+from data.features import SolarScaler
 from data.storage import latest_upload
 from fastapi.testclient import TestClient
 from mlflow.tracking import MlflowClient
-from serving_app import model_loader
+from serving_app import config, model_loader
 from serving_app.main import app
 
 
@@ -39,18 +41,26 @@ class DashboardTests(unittest.TestCase):
         self.addCleanup(self.cache.stop)
 
     def test_metrics_count_real_predictions_and_validation_errors_only(self):
-        with TestClient(app) as client:
+        sequence = self.solar_rows(72)
+        cached = model_loader.LoadedModel(
+            keras_model=lambda x, training=False: [[0.5]],
+            scaler=SolarScaler().fit(sequence),
+            version="test-solar",
+        )
+        with (
+            patch.object(model_loader, "_model_cache", cached),
+            TestClient(app) as client,
+        ):
             response = client.get("/metrics/summary")
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.json()["request_count"], 0)
             client.get("/health")
-            sequence = [{"close": 165, "volume": 1200000}] * 20
             self.assertEqual(
                 client.post("/predict", json={"sequence": sequence}).status_code,
                 200,
             )
             self.assertEqual(
-                client.post("/predict", json={"sequence": sequence[:19]}).status_code,
+                client.post("/predict", json={"sequence": sequence[:71]}).status_code,
                 422,
             )
             summary = client.get("/metrics/summary").json()
@@ -84,12 +94,35 @@ class DashboardTests(unittest.TestCase):
                 client.get("/metrics/summary?window=invalid").status_code, 422
             )
 
+    @staticmethod
+    def solar_rows(count):
+        start = datetime(2024, 1, 1)
+        return [
+            {
+                "timestamp": (start + timedelta(hours=i)).isoformat(),
+                "region": "제주",
+                "generation_mwh": float(i % 10),
+                "capacity_mw": 100.0,
+                "temperature": 15.0,
+                "humidity": 60.0,
+                "wind_speed": 3.0,
+                "cloud_cover": 4.0,
+            }
+            for i in range(count)
+        ]
+
+    def write_solar_csv(self, path, count=240):
+        import csv
+
+        rows = self.solar_rows(count)
+        with path.open("w", encoding="utf-8", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
+            writer.writeheader()
+            writer.writerows(rows)
+
     def test_dataset_preview_uses_latest_upload_and_matches_prediction_input(self):
         csv_path = self.root / "latest.csv"
-        csv_path.write_text(
-            "Date,Close,Volume\n"
-            + "\n".join(f"2026-01-{i + 1:02d},{100 + i},{1000 + i}" for i in range(25))
-        )
+        self.write_solar_csv(csv_path)
         with patch(
             "serving_app.routers.data.latest_upload", return_value=str(csv_path)
         ):
@@ -97,12 +130,26 @@ class DashboardTests(unittest.TestCase):
                 response = client.get("/data/preview")
                 self.assertEqual(response.status_code, 200)
                 data = response.json()
-                self.assertEqual(data["rows"], 25)
-                self.assertEqual(data["avg_volume"], 1012)
-                self.assertEqual((data["min_close"], data["max_close"]), (100, 124))
-                self.assertEqual(len(data["example"]["sequence"]), 20)
-                self.assertEqual(data["example"]["sequence"][0]["close"], 105)
-                self.assertEqual(data["example"]["sequence"][-1]["volume"], 1024)
+                self.assertEqual(data["rows"], 240)
+                self.assertEqual(data["region"], "제주")
+                self.assertEqual(data["missing_hours"], 0)
+                self.assertEqual(
+                    (data["min_generation_mwh"], data["max_generation_mwh"]), (0, 9)
+                )
+                self.assertEqual(len(data["example"]["sequence"]), 72)
+                self.assertIn("timestamp", data["example"]["sequence"][0])
+                self.assertEqual(data["example"]["sequence"][-1]["capacity_mw"], 100)
+
+    def test_metrics_uses_loaded_model_threshold_and_never_invents_one(self):
+        with TestClient(app) as client:
+            self.assertIsNone(
+                client.get("/metrics/summary").json()["drift"]["threshold"]
+            )
+            cached = SimpleNamespace(metadata={"drift_threshold_mwh": 1.25})
+            with patch.object(model_loader, "_model_cache", cached):
+                self.assertEqual(
+                    client.get("/metrics/summary").json()["drift"]["threshold"], 1.25
+                )
 
     def test_system_info_reports_runtime_environment(self):
         with TestClient(app) as client:
@@ -113,6 +160,10 @@ class DashboardTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.json()["model_source"], "mlflow")
                 self.assertEqual(response.json()["loading_mode"], "eager")
+                self.assertEqual(response.json()["unit"], "MWh")
+                self.assertEqual(response.json()["seq_len"], 72)
+                self.assertEqual(response.json()["n_features"], 10)
+                self.assertIsNone(response.json()["rmse_threshold"])
 
     def test_registry_history_keeps_archived_stage_and_flags_stale_serving_cache(self):
         previous_uri = mlflow.get_tracking_uri()
@@ -121,16 +172,16 @@ class DashboardTests(unittest.TestCase):
         mlflow.set_tracking_uri(uri)
         registry = MlflowClient(tracking_uri=uri)
         experiment = registry.create_experiment("dashboard-test")
-        registry.create_registered_model("HAIC_Predictor")
+        registry.create_registered_model(config.MODEL_NAME)
         for mode, score in [("scratch", 2.03), ("fine-tune", 1.69)]:
             run = registry.create_run(experiment)
             registry.log_param(run.info.run_id, "mode", mode)
             registry.log_metric(run.info.run_id, "rmse", score)
             version = registry.create_model_version(
-                "HAIC_Predictor", (self.root / "model").as_uri(), run.info.run_id
+                config.MODEL_NAME, (self.root / "model").as_uri(), run.info.run_id
             )
             registry.transition_model_version_stage(
-                "HAIC_Predictor",
+                config.MODEL_NAME,
                 version.version,
                 "Production",
                 archive_existing_versions=True,
@@ -152,6 +203,32 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual(result["versions"][0]["rmse"], 1.69)
             self.assertEqual(result["versions"][1]["stage"], "Archived")
 
+    def test_local_model_reports_validation_metrics_without_registry(self):
+        cached = SimpleNamespace(
+            version="solar-local",
+            registry_version=None,
+            metadata={
+                "validation_metrics": {"rmse": 2.75},
+                "mode": "scratch",
+                "gate_baseline_rmse": 3.1,
+                "gate_passed": False,
+                "drift_threshold_mwh": 4.125,
+            },
+        )
+        with (
+            patch.dict(
+                os.environ,
+                {"MLFLOW_TRACKING_URI": f"sqlite:///{self.root / 'absent.db'}"},
+            ),
+            patch.object(model_loader, "_model_cache", cached),
+            TestClient(app) as client,
+        ):
+            result = client.get("/models/overview").json()
+            self.assertEqual(result["served_model"]["rmse"], 2.75)
+            self.assertEqual(result["served_model"]["stage"], "Local")
+            self.assertIs(result["served_model"]["gate_passed"], False)
+            self.assertEqual(client.get("/system/info").json()["rmse_gate"], 3.1)
+
     def test_missing_registry_does_not_create_database_or_fake_model(self):
         missing = self.root / "missing.db"
         with (
@@ -165,7 +242,7 @@ class DashboardTests(unittest.TestCase):
             self.assertFalse(missing.exists())
 
     def test_recent_events_ignore_bad_dates_and_keep_newest_first(self):
-        (self.root / "aiops.log").write_text(
+        (self.root / "solar_aiops.log").write_text(
             "2026-01-02 09:00:00,000 [WARNING] [WARN] drift detected\n"
             "2026-01-02 09:00:01,000 [INFO] [OK] production promoted\n"
             "2026-99-02 09:00:02,000 [INFO] damaged timestamp\n"
@@ -182,9 +259,9 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual(events[1]["level"], "WARNING")
 
     def test_uploaded_csv_is_used_by_preview(self):
-        csv_bytes = (
-            Path(__file__).resolve().parents[1] / "project/data/sample_haic_prices.csv"
-        ).read_bytes()
+        path = self.root / "input.csv"
+        self.write_solar_csv(path)
+        csv_bytes = path.read_bytes()
         with (
             patch("serving_app.routers.data.UPLOAD_DIR", str(self.root)),
             patch(
@@ -200,7 +277,7 @@ class DashboardTests(unittest.TestCase):
             preview = client.get("/data/preview").json()
             self.assertEqual(preview["filename"], response.json()["filename"])
             self.assertEqual(preview["source"], "upload")
-            self.assertEqual(preview["rows"], 756)
+            self.assertEqual(preview["rows"], 240)
 
 
 if __name__ == "__main__":
