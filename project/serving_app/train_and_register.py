@@ -42,7 +42,16 @@ def evaluate_predictions(y_true, y_pred, timestamps) -> dict:
     daytime = np.asarray(
         [6 <= datetime.fromisoformat(t).hour <= 18 for t in timestamps]
     )
+    monthly = {}
+    for month in sorted({t[:7] for t in timestamps}):
+        mask = np.asarray([t.startswith(month) for t in timestamps])
+        monthly[month] = {
+            "mae": float(np.mean(np.abs(errors[mask]))),
+            "rmse": float(np.sqrt(np.mean(errors[mask] ** 2))),
+            "n_samples": int(mask.sum()),
+        }
     return {
+        "monthly": monthly,
         "mae": float(np.mean(np.abs(errors))),
         "rmse": float(np.sqrt(np.mean(errors**2))),
         "daytime_mae": float(np.mean(np.abs(errors[daytime])))
@@ -120,6 +129,25 @@ def prepare_training_data(rows: list[dict]) -> dict:
         "scaler": scaler,
         **{name: _partition(group, scaler) for name, group in groups.items()},
     }
+
+
+def split_selection_validation(partition):
+    """2023년 전반은 조기 종료/후보 선택, 후반은 최종 게이트에만 사용한다."""
+    masks = [
+        np.asarray([t < "2023-07-01" for t in partition["timestamps"]]),
+        np.asarray([t >= "2023-07-01" for t in partition["timestamps"]]),
+    ]
+    if not all(mask.any() for mask in masks):
+        raise ValueError("2023년 전반 선택 구간과 후반 검증 구간이 모두 필요합니다")
+    return tuple(
+        {
+            key: np.asarray(value)[mask].tolist()
+            if key == "timestamps"
+            else np.asarray(value)[mask]
+            for key, value in partition.items()
+        }
+        for mask in masks
+    )
 
 
 def _predictions(model, partition, scaler):
@@ -236,8 +264,11 @@ def _train(rows, epochs):
 
     keras.utils.set_random_seed(SEED)
     prepared = prepare_training_data(rows)
+    selection, validation_partition = split_selection_validation(prepared["validation"])
+    prepared["selection"] = selection
+    prepared["validation"] = validation_partition
     model = build_model()
-    _fit(model, prepared["scaler"], prepared["train"], prepared["validation"], epochs)
+    _fit(model, prepared["scaler"], prepared["train"], selection, epochs)
     validation = _evaluate(model, prepared["validation"], prepared["scaler"])
     promoted = passes_gate(
         validation["model"]["rmse"],
@@ -251,6 +282,9 @@ def _train(rows, epochs):
     metadata = _metadata(
         prepared["train"], prepared["validation"], metrics, epochs, "scratch"
     )
+    metadata["architecture"] = model.name
+    metadata["selection_start"] = selection["timestamps"][0]
+    metadata["selection_end"] = selection["timestamps"][-1]
     metadata["scaler_fit_end"] = max(
         r["timestamp"] for r in rows if r["timestamp"] < "2023-01-01"
     )
@@ -300,7 +334,13 @@ def _log_and_register(
         for split, methods in metadata["metrics"].items():
             for method, scores in methods.items():
                 for metric, value in scores.items():
-                    if value is not None:
+                    if metric == "monthly":
+                        for month, monthly_scores in value.items():
+                            for key, number in monthly_scores.items():
+                                mlflow.log_metric(
+                                    f"{split}_{method}_{month}_{key}", number
+                                )
+                    elif value is not None:
                         mlflow.log_metric(f"{split}_{method}_{metric}", value)
         mlflow.log_metric("rmse", metadata["metrics"]["validation"]["model"]["rmse"])
         mlflow.log_metric("error_threshold_mwh", metadata["error_threshold_mwh"])
@@ -371,7 +411,7 @@ def fine_tune(
     metadata_extra=None,
     promote=True,
 ) -> dict:
-    """주어진 과거 관측치의 마지막 7일을 검증으로 남겨 incumbent와 비교합니다."""
+    """선택 7일과 마지막 검증 7일을 분리해 incumbent와 비교합니다."""
     from tensorflow import keras
 
     from serving_app.model_loader import get_model
@@ -386,16 +426,23 @@ def fine_tune(
     ordered = [row for row in ordered if row["timestamp"] >= earliest]
     cutoff = (end - timedelta(days=7) + timedelta(hours=1)).isoformat()
     incumbent = incumbent if incumbent is not None else get_model()
+    selection_cutoff = (end - timedelta(days=14) + timedelta(hours=1)).isoformat()
     windows = list(sample_windows(ordered))
     train = _partition(
-        [(w, t) for w, t in windows if t["timestamp"] < cutoff], incumbent.scaler
+        [(w, t) for w, t in windows if t["timestamp"] < selection_cutoff],
+        incumbent.scaler,
+    )
+    selection = _partition(
+        [(w, t) for w, t in windows if selection_cutoff <= t["timestamp"] < cutoff],
+        incumbent.scaler,
     )
     validation = _partition(
         [(w, t) for w, t in windows if t["timestamp"] >= cutoff], incumbent.scaler
     )
-    if not len(train["y"]) or len(validation["y"]) < 7 * 24:
+    if not len(train["y"]) or not len(selection["y"]) or len(validation["y"]) < 7 * 24:
         raise ValueError(
-            "재학습에는 완전한 학습 구간과 연속된 마지막 7일 검증 구간이 필요합니다"
+            "재학습에는 완전한 학습 구간과 "
+            "유효한 선택 구간·연속된 최종 검증 7일 구간이 필요합니다"
         )
     selection_end = max(
         incumbent.metadata.get("training_end", ""),
@@ -409,7 +456,7 @@ def fine_tune(
     model.compile(
         optimizer=keras.optimizers.Adam(learning_rate=FINE_TUNE_LR), loss="mse"
     )
-    _fit(model, incumbent.scaler, train, validation, epochs)
+    _fit(model, incumbent.scaler, train, selection, epochs)
     scores = _evaluate(model, validation, incumbent.scaler)
     scores["incumbent"] = _evaluate(
         incumbent._keras_model, validation, incumbent.scaler
@@ -422,6 +469,9 @@ def fine_tune(
     metadata = _metadata(train, validation, {"validation": scores}, epochs, "fine-tune")
     metadata.update(
         scaler_fit_end=incumbent.metadata.get("scaler_fit_end"),
+        architecture=model.name,
+        selection_start=selection["timestamps"][0],
+        selection_end=selection["timestamps"][-1],
         parent_version=incumbent.registry_version or incumbent.version,
         gate_passed=passed,
     )

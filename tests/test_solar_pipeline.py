@@ -330,7 +330,7 @@ class PromotionTests(unittest.TestCase):
 
         for error in (3.0, 1.0):
             scores = {
-                name: {"rmse": rmse}
+                name: {"rmse": rmse, "monthly": {"2024-02": {"rmse": rmse}}}
                 for name, rmse in (
                     ("model", error),
                     ("persistence", 2.0),
