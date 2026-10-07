@@ -38,6 +38,7 @@ class PipelineTests(unittest.TestCase):
             patch.object(predict, "latest_upload", return_value=str(self.path)),
             patch.object(predict, "REPLAY_LOG", self.root / "replay.jsonl"),
             patch.object(predict, "_last_replay", {}),
+            patch.object(predict, "_batch_contexts", {}),
             patch.object(predict, "recent_predictions", []),
             patch.object(
                 app.state, "request_log_path", self.root / "requests.jsonl", create=True
@@ -108,6 +109,7 @@ class PipelineTests(unittest.TestCase):
         for change in ("dataset", "model"):
             with self.subTest(change=change):
                 predict._last_replay.clear()
+                predict._batch_contexts.clear()
                 predict.recent_predictions.clear()
                 self.replay(limit=84)
                 if change == "dataset":
@@ -129,6 +131,7 @@ class PipelineTests(unittest.TestCase):
         self.model.metadata["drift_threshold_mwh"] = 200.0
         self.assertEqual(self.replay()["drift_check"]["status"], "ok")
         predict._last_replay.clear()
+        predict._batch_contexts.clear()
         predict.recent_predictions.clear()
         self.model.metadata["drift_threshold_mwh"] = 10.0
         with patch.dict(os.environ, {"MODEL_SOURCE": "local"}):
@@ -144,6 +147,25 @@ class PipelineTests(unittest.TestCase):
         self.assertIs(model_loader.get_model(), self.model)
         self.replay()
         self.assertEqual(self.training.call_count, 1)
+
+    def test_future_observations_rejected_without_poisoning_monitoring(self):
+        self.path.write_bytes(csv_bytes(hourly_rows(240, "2099-01-01T00:00:00")))
+        response = self.client.post(
+            "/predict/batch-test",
+            json={"start_timestamp": "2099-01-04T00:00:00", "limit": 168},
+        )
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(predict.recent_predictions, [])
+        self.assertEqual(predict._last_replay, {})
+        self.assertFalse((self.root / "replay.jsonl").exists())
+
+    def test_replay_response_identifies_evaluated_source_bytes(self):
+        import hashlib
+
+        result = self.replay(limit=1)
+        self.assertEqual(
+            result["dataset_sha256"], hashlib.sha256(self.path.read_bytes()).hexdigest()
+        )
 
     def test_training_selection_end_is_checked_even_if_validation_end_is_older(self):
         self.model.metadata["training_end"] = "2024-02-02T00:00:00"
@@ -272,6 +294,7 @@ class PromotionTests(unittest.TestCase):
             patch.object(predict, "latest_upload", return_value=str(path)),
             patch.object(predict, "REPLAY_LOG", self.root / "replay.jsonl"),
             patch.object(predict, "_last_replay", {}),
+            patch.object(predict, "_batch_contexts", {}),
             patch.object(predict, "recent_predictions", []),
             patch.object(
                 app.state, "request_log_path", self.root / "requests.jsonl", create=True

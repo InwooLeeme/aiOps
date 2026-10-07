@@ -20,12 +20,14 @@ logger = logging.getLogger("solar_aiops")
 def prepare_service():
     source = os.getenv("MODEL_SOURCE", "local").lower()
     if source == "local":
-        if model_loader.LOCAL_BUNDLE_DIR.is_dir():
+        if model_loader.LOCAL_BUNDLE_DIR.exists() and any(
+            model_loader.LOCAL_BUNDLE_DIR.iterdir()
+        ):
             model_loader.read_bundle(model_loader.LOCAL_BUNDLE_DIR)
             return {"status": "existing", "source": "local"}
         # Docker의 읽기 전용 모델 마운트에 쓰지 않는다.
         directory = RUNTIME_DIR / "bootstrap-solar"
-        if not directory.is_dir():
+        if not directory.exists() or not any(directory.iterdir()):
             train_local(storage.latest_upload(), directory=directory)
         model_loader.read_bundle(directory)
         model_loader.LOCAL_BUNDLE_DIR = directory

@@ -52,6 +52,7 @@ class BatchTestRequest(BaseModel):
 
 
 class BatchTestResponse(BaseModel):
+    dataset_sha256: str
     predictions: list[float]
     records: list[dict]
     drift_check: dict

@@ -45,6 +45,7 @@ class SimulationTests(unittest.TestCase):
             patch.object(predict, "REPLAY_LOG", self.root / "replay.jsonl"),
             patch.object(predict, "SIMULATION_LOG", self.root / "simulation.jsonl"),
             patch.object(predict, "_last_replay", {}),
+            patch.object(predict, "_batch_contexts", {}),
             patch.object(predict, "recent_predictions", []),
             patch.object(
                 app.state, "request_log_path", self.root / "requests.jsonl", create=True
@@ -101,6 +102,14 @@ class SimulationTests(unittest.TestCase):
         )
         self.assertEqual(manual.json()["status"], "blocked")
         self.assertEqual(self.train.call_count, 1)
+
+    def test_switching_scenarios_does_not_repeat_same_training(self):
+        self.run_batch("drift")
+        self.run_batch("normal")
+        result = self.run_batch("drift")
+        self.assertEqual(self.train.call_count, 1)
+        self.assertEqual(result["drift_check"]["new_count"], 0)
+        self.assertEqual(len(predict.recent_predictions), 168)
 
     def test_gate_pass_activates_operating_model_and_clears_old_errors(self):
         self.train.return_value = {
@@ -163,6 +172,19 @@ class SimulationTests(unittest.TestCase):
                 ).status_code,
                 409,
             )
+
+    def test_legacy_isolated_simulator_result_is_not_shown_as_operating_result(self):
+        import json
+
+        old = {
+            "exists": True,
+            "model_name": "JejuSolarSimulator",
+            "simulation_model_version": "3",
+        }
+        (self.root / "simulation.jsonl").write_text(json.dumps(old))
+        result = self.client.get("/simulation/status").json()
+        self.assertFalse(result["exists"])
+        self.assertEqual(json.loads((self.root / "simulation.jsonl").read_text()), old)
 
     def test_curtailment_preserves_missing_and_night_and_source(self):
         self.rows[0]["generation_mwh"] = None

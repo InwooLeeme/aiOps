@@ -241,6 +241,27 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual(response.json()["versions"], [])
             self.assertFalse(missing.exists())
 
+    def test_log_api_preserves_develop_file_access_inside_log_directory(self):
+        (self.root / "aiops.log").write_text("legacy training result", encoding="utf-8")
+        (self.root / "custom.log").write_text("custom event", encoding="utf-8")
+        outside = self.root.parent / (self.root.name + "-outside")
+        outside.write_text("outside")
+        self.addCleanup(outside.unlink)
+        (self.root / "linked.log").symlink_to(outside)
+        with (
+            patch("serving_app.routers.logs.LOG_DIR", str(self.root)),
+            TestClient(app) as client,
+        ):
+            names = [item["name"] for item in client.get("/logs").json()]
+            self.assertIn("aiops.log", names)
+            self.assertIn("custom.log", names)
+            self.assertNotIn("linked.log", names)
+            self.assertEqual(
+                client.get("/logs/aiops.log").json()["content"],
+                "legacy training result",
+            )
+            self.assertEqual(client.get("/logs/linked.log").status_code, 400)
+
     def test_recent_events_ignore_bad_dates_and_keep_newest_first(self):
         (self.root / "solar_aiops.log").write_text(
             "2026-01-02 09:00:00,000 [WARNING] [WARN] drift detected\n"

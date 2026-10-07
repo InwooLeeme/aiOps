@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "project"))
 import mlflow
+import numpy as np
 from data import storage
 from data.features import SolarScaler, load_rows
 from fastapi.testclient import TestClient
@@ -98,7 +99,10 @@ class BootstrapTests(unittest.TestCase):
                 "_train",
                 return_value=(
                     constant_model(),
-                    {"scaler": scaler, "train": {"X": [[[0.0] * 10] * 72]}},
+                    {
+                        "scaler": scaler,
+                        "train": {"X": np.zeros((1, 72, 10), dtype="float32")},
+                    },
                     metadata,
                     True,
                 ),
@@ -117,6 +121,32 @@ class BootstrapTests(unittest.TestCase):
             len(self.client.search_model_versions(f"name='{MODEL_NAME}'")), 1
         )
         self.assertEqual(model_loader._load_from_mlflow().registry_version, "1")
+
+    def test_empty_readonly_model_mount_prepares_runtime_bundle(self):
+        from serving_app import bootstrap
+
+        mount = self.root / "empty-mount"
+        mount.mkdir()
+
+        def train(csv_path, *, directory):
+            model, prepared, metadata, _ = self.train.return_value
+            training.save_bundle(model, prepared["scaler"], metadata, directory)
+
+        with (
+            patch.dict(os.environ, MODEL_SOURCE="local"),
+            patch.object(model_loader, "LOCAL_BUNDLE_DIR", mount),
+            patch.object(bootstrap, "RUNTIME_DIR", self.root / "runtime"),
+            patch.object(bootstrap, "train_local", side_effect=train),
+        ):
+            result = bootstrap.prepare_service()
+            self.assertEqual(result["status"], "prepared")
+            self.assertEqual(
+                model_loader.LOCAL_BUNDLE_DIR, self.root / "runtime/bootstrap-solar"
+            )
+            self.assertEqual(list(mount.iterdir()), [])
+            self.assertGreaterEqual(
+                model_loader._load_from_local().predict_one(self.sequence), 0
+            )
 
     def test_failed_gate_does_not_create_production(self):
         from serving_app.bootstrap import prepare_service

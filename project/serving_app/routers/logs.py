@@ -1,6 +1,7 @@
 """태양광 서비스 운영 로그의 읽기 전용 조회."""
 
 import os
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
@@ -18,7 +19,7 @@ def list_logs():
     files = []
     for name in sorted(os.listdir(LOG_DIR)):
         path = os.path.join(LOG_DIR, name)
-        if name.startswith("solar_") and os.path.isfile(path):
+        if os.path.isfile(path) and not os.path.islink(path):
             files.append({"name": name, "size": os.path.getsize(path)})
     return files
 
@@ -26,7 +27,11 @@ def list_logs():
 @router.get("/{filename}")
 def read_log(filename: str):
     # 경로 조작(디렉토리 탈출) 방지: 순수 파일명만 허용
-    if filename != os.path.basename(filename) or not filename.startswith("solar_"):
+    if (
+        filename != os.path.basename(filename)
+        or Path(LOG_DIR, filename).is_symlink()
+        or Path(LOG_DIR, filename).resolve().parent != Path(LOG_DIR).resolve()
+    ):
         raise HTTPException(status_code=400, detail="잘못된 파일명입니다")
 
     path = os.path.join(LOG_DIR, filename)

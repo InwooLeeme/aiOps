@@ -8,14 +8,15 @@ import threading
 import time
 import uuid
 from collections import deque
-from datetime import timedelta
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from data.features import decode_csv, load_rows, parse_timestamp, sample_windows
 from data.storage import latest_upload
 from fastapi import APIRouter, HTTPException
 
 from serving_app import model_loader
-from serving_app.config import RUNTIME_DIR
+from serving_app.config import MODEL_NAME, RUNTIME_DIR
 from serving_app.monitoring.drift_detector import WINDOW_SIZE, assess_drift
 from serving_app.monitoring.retrain_trigger import check_and_trigger, retrain_at
 from serving_app.schemas import (
@@ -33,6 +34,7 @@ REPLAY_LOG = RUNTIME_DIR / "solar_replay.jsonl"
 SIMULATION_LOG = RUNTIME_DIR / "solar_simulation.jsonl"
 _replay_lock = threading.Lock()
 _last_replay: dict = {}
+_batch_contexts: dict = {}
 
 
 def current_model():
@@ -110,13 +112,17 @@ def evaluate_batch(
         )
     records = []
     identity = model_identity(model)
-    same_context = (
-        _last_replay.get("dataset_hash") == dataset_hash
-        and _last_replay.get("model_version") == identity
-    )
+    context_key = (dataset_hash, identity)
+    previous = _batch_contexts.get(context_key, {})
+    same_context = bool(previous)
+    observed_until = datetime.now(ZoneInfo("Asia/Seoul")).replace(tzinfo=None)
     for window, target in sample_windows(rows):
         if target["timestamp"] < start_timestamp:
             continue
+        if parse_timestamp(target["timestamp"]) > observed_until:
+            raise HTTPException(
+                422, "미래 시각의 관측값은 과거 평가에 사용할 수 없습니다"
+            )
         records.append(
             {
                 "timestamp": target["timestamp"],
@@ -140,13 +146,13 @@ def evaluate_batch(
         raise HTTPException(
             422, "시뮬레이션에는 결측 없는 연속 168시간 평가 구간이 필요합니다"
         )
-    if same_context and records[-1]["timestamp"] < _last_replay["cutoff"]:
+    if same_context and records[-1]["timestamp"] < previous["cutoff"]:
         raise HTTPException(
             409, "이미 평가한 관측 시각보다 이전으로 재생할 수 없습니다"
         )
-    previous_cutoff = _last_replay["cutoff"] if same_context else ""
+    previous_cutoff = previous.get("cutoff", "")
     fresh = [r for r in records if r["timestamp"] > previous_cutoff]
-    accumulated = (list(recent_predictions) if same_context else []) + fresh
+    accumulated = list(previous.get("records", [])) + fresh
     accumulated = accumulated[-WINDOW_SIZE:]
     replay_id = uuid.uuid4().hex
     REPLAY_LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -164,6 +170,9 @@ def evaluate_batch(
                 + "\n"
             )
     threshold = model.metadata.get("drift_threshold_mwh")
+    recent_predictions[:] = accumulated
+    _last_replay.clear()
+    _last_replay.update(previous)
     if fresh:
         recent_predictions[:] = accumulated
         _last_replay.clear()
@@ -192,8 +201,10 @@ def evaluate_batch(
             recent_predictions.clear()
     else:
         check = {**_last_replay.get("check", assess_drift(accumulated, threshold))}
+    _batch_contexts[context_key] = {**_last_replay, "records": accumulated}
     check = {**check, "new_count": len(fresh), "model_version": identity}
     return BatchTestResponse(
+        dataset_sha256=dataset_hash,
         predictions=[r["predicted"] for r in records],
         records=records,
         drift_check=check,
@@ -212,7 +223,13 @@ def simulation_status():
         return {"exists": False}
     with SIMULATION_LOG.open(encoding="utf-8") as stream:
         last = deque(stream, maxlen=1)
-    return json.loads(last[0]) if last else {"exists": False}
+    result = json.loads(last[0]) if last else {"exists": False}
+    if result.get("model_name") != MODEL_NAME:
+        return {
+            "exists": False,
+            "reason": "이전 격리 시뮬레이터 기록은 운영 결과에서 제외합니다",
+        }
+    return result
 
 
 @router.post("/simulation/run")
@@ -295,6 +312,8 @@ def retrain(req: RetrainRequest):
             )
         try:
             _last_replay["attempted"] = True
+            context_key = (_last_replay["dataset_hash"], _last_replay["model_version"])
+            _batch_contexts[context_key]["attempted"] = True
             result = retrain_at(load_rows(path), req.cutoff_timestamp, incumbent=model)
         except ValueError as exc:
             return {"status": "blocked", "reason": str(exc)}
