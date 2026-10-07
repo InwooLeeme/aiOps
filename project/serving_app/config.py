@@ -9,3 +9,11 @@ LOG_DIR = PROJECT_ROOT / "logs"
 RUNTIME_DIR = PROJECT_ROOT / "runtime"
 DEFAULT_TRACKING_URI = f"sqlite:///{RUNTIME_DIR / 'mlflow.db'}"
 ARTIFACT_DIR = RUNTIME_DIR / "mlartifacts"
+
+# 학습과 대시보드가 같은 설정값을 사용합니다.
+SEED = 42
+RMSE_GATE = 4.00
+MODEL_NAME = "HAIC_Predictor"
+BASE_EPOCHS = 100
+FINE_TUNE_EPOCHS = 10
+FINE_TUNE_LR = 1e-4

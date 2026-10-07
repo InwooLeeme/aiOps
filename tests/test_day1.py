@@ -26,6 +26,16 @@ class MeanPriceModel:
 class Day1Tests(unittest.TestCase):
     def setUp(self):
         model_loader._model_cache = None
+        metrics_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(metrics_directory.cleanup)
+        metrics_path = patch.object(
+            app.state,
+            "request_log_path",
+            Path(metrics_directory.name) / "requests.log",
+            create=True,
+        )
+        metrics_path.start()
+        self.addCleanup(metrics_path.stop)
         self.env = patch.dict(
             os.environ, {"LOADING_MODE": "lazy", "MODEL_SOURCE": "local"}
         )

@@ -30,24 +30,24 @@ from data.storage import latest_upload
 from mlflow.tracking import MlflowClient
 from tensorflow import keras
 
-from serving_app.config import MODEL_DIR, PROJECT_ROOT
+from serving_app.config import (
+    BASE_EPOCHS,
+    FINE_TUNE_EPOCHS,
+    FINE_TUNE_LR,
+    MODEL_DIR,
+    MODEL_NAME,
+    PROJECT_ROOT,
+    RMSE_GATE,
+    SEED,
+)
 from serving_app.lstm_model import build_model
 from serving_app.tracking import configure_experiment
 
 # 시드 고정: LSTM 가중치 초기화가 랜덤이라 시드 없이는 실행마다 RMSE가 크게 흔들려
 # (관찰치: 2.22~5.29) 게이트($4.00) 통과 여부가 운에 좌우됩니다. numpy/tensorflow/python
 # random을 한 번에 고정해 재현 가능한 학습 결과를 보장합니다.
-SEED = 42
 keras.utils.set_random_seed(SEED)
-
-RMSE_GATE = 4.00
-MODEL_NAME = "HAIC_Predictor"
 SCALER_PATH = MODEL_DIR / "scaler.pkl"
-BASE_EPOCHS = (
-    100  # 3층 LSTM + 3년치 데이터 기준, RMSE가 안정적으로 게이트 아래로 수렴하는 지점
-)
-FINE_TUNE_EPOCHS = 10
-FINE_TUNE_LR = 1e-4  # base 학습(1e-3)보다 낮은 학습률로 살짝만 갱신
 
 
 def rmse(y_true, y_pred) -> float:

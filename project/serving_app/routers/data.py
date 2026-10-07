@@ -17,6 +17,7 @@ from data.features import SEQ_LEN, load_rows
 from data.storage import UPLOAD_DIR, latest_upload
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
+from serving_app.config import DATA_DIR
 from serving_app.monitoring.drift_detector import WINDOW_SIZE
 
 router = APIRouter(prefix="/data")
@@ -69,4 +70,40 @@ def status():
         "end_date": rows[-1]["Date"],
         "min_close": min(closes),
         "max_close": max(closes),
+    }
+
+
+@router.get("/preview")
+def preview():
+    """최신 업로드 데이터, 없으면 샘플 CSV의 통계와 최근 입력 예제를 제공합니다."""
+    try:
+        path = latest_upload()
+        source = "upload"
+    except FileNotFoundError:
+        path = DATA_DIR / "sample_haic_prices.csv"
+        source = "sample"
+    try:
+        rows = load_rows(path)
+        if not rows:
+            raise ValueError("empty CSV")
+    except (OSError, ValueError, KeyError):
+        raise HTTPException(
+            422, "CSV 데이터를 읽을 수 없습니다. 날짜·종가·거래량을 확인하세요."
+        ) from None
+    closes = [row["Close"] for row in rows]
+    return {
+        "filename": os.path.basename(path),
+        "source": source,
+        "rows": len(rows),
+        "start_date": rows[0]["Date"],
+        "end_date": rows[-1]["Date"],
+        "min_close": min(closes),
+        "max_close": max(closes),
+        "avg_volume": sum(row["Volume"] for row in rows) / len(rows),
+        "example": {
+            "sequence": [
+                {"close": row["Close"], "volume": row["Volume"]}
+                for row in rows[-SEQ_LEN:]
+            ]
+        },
     }

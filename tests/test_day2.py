@@ -76,7 +76,7 @@ class Day2Tests(unittest.TestCase):
 
     def test_production_loader_uses_configured_store_and_local_scaler(self):
         mlflow.set_tracking_uri(self.uri)
-        _register_if_gate_passed(None, self.run_id, 4.0)
+        promoted = _register_if_gate_passed(None, self.run_id, 4.0)
         mlflow.set_tracking_uri(f"sqlite:///{self.root / 'wrong.db'}")
         with (
             patch.dict(os.environ, {"MLFLOW_TRACKING_URI": self.uri}),
@@ -90,6 +90,9 @@ class Day2Tests(unittest.TestCase):
                     f"Production loading is not ready: {type(exc).__name__}: {exc}"
                 )
         self.assertEqual(model.version, "production")
+        self.assertEqual(
+            getattr(model, "registry_version", None), str(promoted["version"])
+        )
         self.assertAlmostEqual(prediction, 150.0)
 
 

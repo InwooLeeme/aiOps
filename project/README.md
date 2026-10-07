@@ -73,12 +73,14 @@ project/
     ├── schemas.py                  # Day1
     ├── lstm_model.py               # Day1·Day2 공유 아키텍처 정의
     ├── model_loader.py             # Day1·Day2 완료: 로컬·MLflow 로딩
+    ├── request_metrics.py          # 실제 예측 요청 기록과 기간별 집계
     ├── train_and_register.py       # Day2 (base 학습) + Day3 (fine-tuning)
     ├── Dockerfile, docker-compose.yml   # Day2 (단일 컨테이너)
     ├── models/
     │   ├── haic_v1.keras           # Day1 로컬 baseline 모델 (train_baseline_v1.py가 생성)
     │   └── scaler.pkl              # Day1~3 공용 정규화 스케일러 (train_baseline_v1.py가 생성)
     ├── routers/
+    │   ├── dashboard.py            # 요청 지표·모델 이력·설정·알람 조회
     │   ├── predict.py              # 단일 예측과 Day3 배치 예측
     │   ├── health.py               # Day1
     │   ├── data.py                 # Day2 : CSV 업로드 (완성형)
@@ -87,7 +89,9 @@ project/
     │   ├── drift_detector.py       # 최근 21건 RMSE와 감지 기준
     │   └── retrain_trigger.py      # 최신 CSV로 fine-tuning과 승격 결과 확인
     └── static/
-        └── index.html              # 실습용 대시보드 - http://localhost:8077/
+        ├── index.html              # 4개 탭의 운영 대시보드
+        ├── dashboard.css           # 밝은 테마와 반응형 레이아웃
+        └── dashboard.js            # 실제 API 연결과 화면 갱신
 ```
 
 `serving_app/routers/data.py`, `routers/logs.py`, `static/index.html`은 실습
@@ -102,15 +106,24 @@ Registry API로 따로 조회하는 대신, `retrain_trigger.py`가 남기는 �
 
 `http://localhost:8077/`은 개발자 대시보드입니다.
 
-- **HAIC 데이터 업로드** - `data/sample_haic_prices.csv`(또는 같은 형식의 다른 CSV)를
-  올리면 `/data/upload`로 전송되고, 업로드 완료 여부가 그 자리에 바로 표시됩니다.
-- **드리프트 시뮬레이션** - 정상/드리프트 배치를 `/predict/batch-test`로 전송합니다.
-- **드리프트 감지 기반 재학습 파이프라인** - 감지 → fine-tuning → 재배포 단계를
-  시각화합니다. 최근 21건의 RMSE가 4달러를 초과하면 재학습을 실행합니다.
-- **재학습 로그** - `/logs`로 `logs/aiops.log` 파일 목록을 보여주고, 클릭하면
-  `/logs/{파일명}`으로 내용을 그대로 열어 보여줍니다. `[WARN] drift detected` →
-  `[INFO] retrain triggered` → `[OK] new_rmse=...`가 순서대로 쌓이는지 직접
-  확인하는 용도입니다.
+- **Dashboard** - 기간별 요청 수·평균 응답시간·성공률, 드리프트 점수,
+  7단계 파이프라인, MLflow 등록 이력과 최근 재학습 알람을 표시합니다.
+- **Simulation** - 최근 20거래일의 입력을 편집해 단일 예측을 실행하거나,
+  정상·드리프트 배치를 `/predict/batch-test`로 전송합니다.
+- **Datasets** - 최신 업로드 CSV의 통계를 조회하고 새 CSV를 업로드합니다.
+  업로드 데이터가 없으면 제공된 샘플을 미리보기로 표시합니다.
+- **System** - 현재 모델 소스·로딩 모드와 실제 학습·드리프트 상수를 조회합니다.
+
+`logs/requests.log`에는 `/predict`와 `/predict/batch-test`의 실제 응답 코드와
+응답시간만 기록합니다. 화면의 자동 새로고침 요청은 지표 집계에서 제외합니다.
+기간은 5분·1시간·6시간·24시간이며, 요청이 없으면 지표는 0입니다.
+최근 알람은 기존 `logs/aiops.log`에서 읽고, 모델 이력의 스테이지는 MLflow의
+실제 상태(Production, Archived 등)를 표시합니다.
+
+대시보드 조회 API는 `/metrics/summary`, `/models/overview`, `/events/recent`,
+`/data/preview`, `/system/info`입니다. CSV 통계와 예측 입력 예제는 같은 데이터에서
+만듭니다. Production 승격 후 서버 캐시의 버전이 다르면 재시작 안내가 표시됩니다.
+조회와 새로고침은 모델 재학습이나 캐시 교체를 실행하지 않습니다.
 
 ## 실습 시나리오 (Day1 → Day2 → Day3)
 

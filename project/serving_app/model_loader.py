@@ -57,10 +57,17 @@ class LoadedModel:
     있습니다.
     """
 
-    def __init__(self, keras_model, scaler: HAICScaler, version: str):
+    def __init__(
+        self,
+        keras_model,
+        scaler: HAICScaler,
+        version: str,
+        registry_version: str | None = None,
+    ):
         self._keras_model = keras_model
         self.scaler = scaler
         self.version = version
+        self.registry_version = registry_version
 
     def predict_one(self, sequence: list[dict]) -> float:
         """
@@ -135,6 +142,7 @@ def _load_from_mlflow() -> LoadedModel:
       값이면 성공
     """
     import mlflow.tensorflow
+    from mlflow.tracking import MlflowClient
 
     from serving_app.tracking import configure_tracking
 
@@ -143,7 +151,20 @@ def _load_from_mlflow() -> LoadedModel:
     # 모델 : MLflow 레지스트리에서 "Production" 단계 모델을 불러옵니다. (완성)
     # 버전 번호 대신 단계(Production)로 불러오므로, 재배포 때 서버 코드를 고칠 필요가
     # 없습니다.
-    keras_model = mlflow.tensorflow.load_model(MLFLOW_MODEL_URI)
+    model_name, stage = MLFLOW_MODEL_URI.removeprefix("models:/").rsplit("/", 1)
+    candidates = MlflowClient().get_latest_versions(model_name, [stage])
+    production = max(
+        (v for v in candidates if v.current_stage == stage),
+        key=lambda v: int(v.version),
+        default=None,
+    )
+    if production is None:
+        raise ValueError(f"{model_name}의 {stage} 모델이 없습니다")
+    registry_version = str(production.version)
+    # 숫자 버전으로 고정해 조회와 로딩 사이에 승격이 일어나도 실제 캐시 버전을 압니다.
+    keras_model = mlflow.tensorflow.load_model(
+        f"models:/{model_name}/{registry_version}"
+    )
 
     # ════════════════════════════ [빈칸 5] ════════════════════════════
     # 스케일러를 알맞은 곳에서 불러오세요. (바로 위 _load_from_local 과 비교해 보세요)
@@ -155,7 +176,12 @@ def _load_from_mlflow() -> LoadedModel:
     # (train_and_register.py 의 SCALER_PATH 참고)
     #     · 스케일러를 여기서 새로 fit 하면 어떤 일이 생길까요?
     scaler = HAICScaler.load(SCALER_PATH)
-    return LoadedModel(keras_model=keras_model, scaler=scaler, version="production")
+    return LoadedModel(
+        keras_model=keras_model,
+        scaler=scaler,
+        version="production",
+        registry_version=registry_version,
+    )
 
 
 def _load_model() -> LoadedModel:
