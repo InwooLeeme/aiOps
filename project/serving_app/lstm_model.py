@@ -6,6 +6,70 @@ from tensorflow import keras
 N_FEATURES = len(FEATURE_COLUMNS)
 
 
+def build_daily_residual() -> keras.Model:
+    """전날 같은 시간 값 + 시간대별 Ridge 보정. 표준 Keras 레이어만 사용."""
+    import numpy as np
+
+    inputs = keras.layers.Input(shape=(SEQ_LEN, N_FEATURES))
+
+    def point(lag):
+        return keras.layers.Flatten()(
+            keras.layers.Cropping1D((SEQ_LEN - lag, lag - 1))(inputs)
+        )
+
+    last, yesterday = point(1), point(24)
+    generation = np.zeros((N_FEATURES, 1))
+    generation[FEATURE_COLUMNS.index("generation_mwh"), 0] = 1
+    baseline = keras.layers.Dense(
+        1,
+        use_bias=False,
+        trainable=False,
+        kernel_initializer=keras.initializers.Constant(generation),
+        name="previous_day_generation",
+    )(yesterday)
+    context = keras.layers.Concatenate()(
+        [
+            last,
+            yesterday,
+            keras.layers.Subtract()([last, point(25)]),
+            keras.layers.Subtract()([point(2), point(26)]),
+        ]
+    )
+    constant = keras.layers.Dense(
+        1, trainable=False, kernel_initializer="zeros", bias_initializer="ones"
+    )(last)
+    context = keras.layers.Concatenate()([context, constant])
+    # Scaler fixes sin/cos ranges at [-1, 1]. At integer hours these frozen
+    # cosine-distance gates are one-hot; target hour is last observed hour + 1.
+    phase = 2 * np.pi * np.arange(24) / 24
+    boundary = np.cos(2 * np.pi / 24)
+    span = 1 - boundary
+    weights = np.zeros((N_FEATURES, 24))
+    weights[FEATURE_COLUMNS.index("hour_sin")] = 2 * np.sin(phase) / span
+    weights[FEATURE_COLUMNS.index("hour_cos")] = 2 * np.cos(phase) / span
+    hours = keras.layers.Dense(
+        24,
+        trainable=False,
+        kernel_initializer=keras.initializers.Constant(weights),
+        bias_initializer=keras.initializers.Constant(
+            (-np.sin(phase) - np.cos(phase) - boundary) / span
+        ),
+    )(last)
+    hours = keras.layers.ReLU(threshold=1e-4, name="observed_hour")(hours)
+    features = keras.layers.Multiply(name="hourly_context")(
+        [
+            keras.layers.Reshape((24, 1))(hours),
+            keras.layers.Reshape((1, 4 * N_FEATURES + 1))(context),
+        ]
+    )
+    correction = keras.layers.Dense(
+        1, use_bias=False, kernel_initializer="zeros", name="daily_correction"
+    )(keras.layers.Flatten()(features))
+    return keras.Model(
+        inputs, keras.layers.Add()([baseline, correction]), name="solar_daily_residual"
+    )
+
+
 def build_model(architecture="seasonal") -> keras.Model:
     if architecture not in {"persistence", "seasonal"}:
         raise ValueError("지원하지 않는 모델 구조입니다")

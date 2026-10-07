@@ -1,5 +1,6 @@
 """운영 배치 누적, 자동 재학습 및 안전한 모델 교체 회귀 검증."""
 
+import hashlib
 import os
 import sys
 import tempfile
@@ -9,7 +10,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "project"))
-from data.features import SolarScaler
+from data.features import SolarScaler, decode_csv
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from serving_app import model_loader
 from serving_app.main import app
@@ -37,6 +39,7 @@ class PipelineTests(unittest.TestCase):
             patch.object(model_loader, "_model_cache", self.model),
             patch.object(predict, "latest_upload", return_value=str(self.path)),
             patch.object(predict, "REPLAY_LOG", self.root / "replay.jsonl"),
+            patch.object(predict, "SIMULATION_LOG", self.root / "simulation.jsonl"),
             patch.object(predict, "_last_replay", {}),
             patch.object(predict, "_batch_contexts", {}),
             patch.object(predict, "recent_predictions", []),
@@ -58,18 +61,22 @@ class PipelineTests(unittest.TestCase):
         )
         self.client = self.stack.enter_context(TestClient(app))
 
-    def replay(self, start="2024-02-01T00:00:00", limit=168):
-        response = self.client.post(
-            "/predict/batch-test", json={"start_timestamp": start, "limit": limit}
-        )
-        self.assertEqual(response.status_code, 200, response.text)
-        return response.json()
+    def evaluate(self, start="2024-02-01T00:00:00", limit=168):
+        source = self.path.read_bytes()
+        with predict._replay_lock:
+            return predict.evaluate_batch(
+                decode_csv(source),
+                self.model,
+                start,
+                limit,
+                hashlib.sha256(source).hexdigest(),
+            ).model_dump()
 
     def test_partial_batches_accumulate_and_trigger_once_when_ready(self):
-        first = self.replay(limit=84)
+        first = self.evaluate(limit=84)
         self.assertEqual(first["drift_check"]["status"], "insufficient_data")
         self.training.assert_not_called()
-        second = self.replay("2024-02-04T12:00:00", 84)
+        second = self.evaluate("2024-02-04T12:00:00", 84)
         self.assertEqual(second["drift_check"]["count"], 168)
         self.assertEqual(second["drift_check"]["retraining"]["status"], "gate_rejected")
         self.assertEqual(self.training.call_count, 1)
@@ -78,31 +85,24 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(len(predict.recent_predictions), 168)
         self.assertIs(model_loader.get_model(), self.model)
 
-    def test_repeat_batch_and_manual_retry_do_not_retrain_same_observations(self):
-        self.replay()
-        result = self.replay()
+    def test_repeat_batch_does_not_retrain_same_observations(self):
+        self.evaluate()
+        result = self.evaluate()
         self.assertEqual(self.training.call_count, 1)
         self.assertEqual(result["drift_check"]["new_count"], 0)
-        manual = self.client.post(
-            "/retrain", json={"cutoff_timestamp": "2024-02-07T23:00:00"}
-        )
-        self.assertEqual(manual.json()["status"], "blocked")
-        self.assertEqual(self.training.call_count, 1)
         self.assertEqual(
             len((self.root / "replay.jsonl").read_text().splitlines()), 168
         )
 
     def test_overlap_only_adds_new_hours_and_reverse_replay_is_rejected(self):
-        self.replay(limit=100)
-        result = self.replay("2024-02-03T00:00:00", 120)
+        self.evaluate(limit=100)
+        result = self.evaluate("2024-02-03T00:00:00", 120)
         self.assertEqual(result["drift_check"]["count"], 168)
         self.assertEqual(result["drift_check"]["new_count"], 68)
         self.assertEqual(self.training.call_count, 1)
-        response = self.client.post(
-            "/predict/batch-test",
-            json={"start_timestamp": "2024-01-20T00:00:00", "limit": 168},
-        )
-        self.assertEqual(response.status_code, 409)
+        with self.assertRaises(HTTPException) as raised:
+            self.evaluate("2024-01-20T00:00:00")
+        self.assertEqual(raised.exception.status_code, 409)
         self.assertEqual(predict._last_replay["cutoff"], "2024-02-07T23:00:00")
 
     def test_dataset_or_model_change_starts_fresh_monitoring_window(self):
@@ -111,68 +111,65 @@ class PipelineTests(unittest.TestCase):
                 predict._last_replay.clear()
                 predict._batch_contexts.clear()
                 predict.recent_predictions.clear()
-                self.replay(limit=84)
+                self.evaluate(limit=84)
                 if change == "dataset":
                     self.rows[0]["temperature"] = 12.0
                     self.path.write_bytes(csv_bytes(self.rows))
                 else:
                     self.model.registry_version = "2"
-                result = self.replay("2024-02-04T12:00:00", 84)
+                result = self.evaluate("2024-02-04T12:00:00", 84)
                 self.assertEqual(result["drift_check"]["count"], 84)
                 self.training.assert_not_called()
 
     def test_gap_does_not_count_as_continuous_week(self):
-        self.replay(limit=84)
-        result = self.replay("2024-02-04T13:00:00", 84)
+        self.evaluate(limit=84)
+        result = self.evaluate("2024-02-04T13:00:00", 84)
         self.assertFalse(result["drift_check"]["ready"])
         self.training.assert_not_called()
 
     def test_normal_or_local_batches_never_train(self):
         self.model.metadata["drift_threshold_mwh"] = 200.0
-        self.assertEqual(self.replay()["drift_check"]["status"], "ok")
+        self.assertEqual(self.evaluate()["drift_check"]["status"], "ok")
         predict._last_replay.clear()
         predict._batch_contexts.clear()
         predict.recent_predictions.clear()
         self.model.metadata["drift_threshold_mwh"] = 10.0
         with patch.dict(os.environ, {"MODEL_SOURCE": "local"}):
-            result = self.replay()
+            result = self.evaluate()
         self.assertEqual(result["drift_check"]["retraining"]["status"], "blocked")
         self.training.assert_not_called()
 
     def test_training_failure_is_reported_without_losing_predictions_or_retrying(self):
         self.training.side_effect = RuntimeError("training unavailable")
-        result = self.replay()
+        result = self.evaluate()
         self.assertEqual(len(result["records"]), 168)
         self.assertEqual(result["drift_check"]["retraining"]["status"], "failed")
         self.assertIs(model_loader.get_model(), self.model)
-        self.replay()
+        self.evaluate()
         self.assertEqual(self.training.call_count, 1)
 
     def test_future_observations_rejected_without_poisoning_monitoring(self):
         self.path.write_bytes(csv_bytes(hourly_rows(240, "2099-01-01T00:00:00")))
-        response = self.client.post(
-            "/predict/batch-test",
-            json={"start_timestamp": "2099-01-04T00:00:00", "limit": 168},
-        )
-        self.assertEqual(response.status_code, 422)
+        with self.assertRaises(HTTPException) as raised:
+            self.evaluate("2099-01-04T00:00:00")
+        self.assertEqual(raised.exception.status_code, 422)
         self.assertEqual(predict.recent_predictions, [])
         self.assertEqual(predict._last_replay, {})
         self.assertFalse((self.root / "replay.jsonl").exists())
 
-    def test_replay_response_identifies_evaluated_source_bytes(self):
+    def test_batch_response_identifies_evaluated_source_bytes(self):
         import hashlib
 
-        result = self.replay(limit=1)
+        result = self.evaluate(limit=1)
         self.assertEqual(
             result["dataset_sha256"], hashlib.sha256(self.path.read_bytes()).hexdigest()
         )
 
     def test_training_selection_end_is_checked_even_if_validation_end_is_older(self):
         self.model.metadata["training_end"] = "2024-02-02T00:00:00"
-        response = self.client.post(
-            "/predict/batch-test", json={"start_timestamp": "2024-02-01T00:00:00"}
-        )
-        self.assertEqual(response.status_code, 422)
+        with self.assertRaises(HTTPException) as raised:
+            self.evaluate("2024-02-01T00:00:00")
+        self.assertEqual(raised.exception.status_code, 422)
         self.training.assert_not_called()
 
 
@@ -293,6 +290,7 @@ class PromotionTests(unittest.TestCase):
             patch.dict(os.environ, {"LOADING_MODE": "lazy"}),
             patch.object(predict, "latest_upload", return_value=str(path)),
             patch.object(predict, "REPLAY_LOG", self.root / "replay.jsonl"),
+            patch.object(predict, "SIMULATION_LOG", self.root / "simulation.jsonl"),
             patch.object(predict, "_last_replay", {}),
             patch.object(predict, "_batch_contexts", {}),
             patch.object(predict, "recent_predictions", []),
@@ -311,8 +309,8 @@ class PromotionTests(unittest.TestCase):
             TestClient(app) as client,
         ):
             response = client.post(
-                "/predict/batch-test",
-                json={"start_timestamp": "2024-02-01T00:00:00", "limit": 168},
+                "/simulation/run",
+                json={"scenario": "normal", "start_timestamp": "2024-02-01T00:00:00"},
             )
             self.assertEqual(response.status_code, 200, response.text)
             result = response.json()["drift_check"]["retraining"]

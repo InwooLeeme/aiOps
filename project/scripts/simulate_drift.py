@@ -18,32 +18,27 @@ def main(argv=None):
         "--target", choices=["local", "container", "both"], default="local"
     )
     parser.add_argument(
-        "--scenario", choices=["normal", "drift", "both", "replay"], default="both"
+        "--scenario", choices=["normal", "drift", "both"], default="both"
     )
     parser.add_argument(
         "--start", default="2024-05-23T17:00:00", help="평가 시작 시각(KST)"
     )
-    parser.add_argument(
-        "--limit", type=int, default=168, help="replay 평가 건수(1~744)"
-    )
     parser.add_argument("--timeout", type=float, default=180)
     args = parser.parse_args(argv)
-    if not 1 <= args.limit <= 744 or args.timeout <= 0:
-        parser.error("limit는 1~744, timeout은 양수여야 합니다")
+    if args.timeout <= 0:
+        parser.error("timeout은 양수여야 합니다")
     names = list(TARGETS) if args.target == "both" else [args.target]
     scenarios = ["normal", "drift"] if args.scenario == "both" else [args.scenario]
     results = []
     for scenario in scenarios:
-        path = "/predict/batch-test" if scenario == "replay" else "/simulation/run"
-        payload = {"start_timestamp": args.start}
-        payload.update(
-            {"limit": args.limit} if scenario == "replay" else {"scenario": scenario}
-        )
+        payload = {"start_timestamp": args.start, "scenario": scenario}
         for name in names:
             item = {"target": name, "scenario": scenario}
             try:
                 response = requests.post(
-                    TARGETS[name] + path, json=payload, timeout=args.timeout
+                    TARGETS[name] + "/simulation/run",
+                    json=payload,
+                    timeout=args.timeout,
                 )
                 response.raise_for_status()
                 data = response.json()

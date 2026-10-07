@@ -40,32 +40,11 @@ class PredictResponse(BaseModel):
     model_version: str
 
 
-class BatchTestRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    start_timestamp: str = "2024-01-01T00:00:00"
-    limit: int = Field(default=168, ge=1, le=744)
-
-    @field_validator("start_timestamp")
-    @classmethod
-    def timestamp_is_hourly(cls, value):
-        return parse_timestamp(value).isoformat()
-
-
 class BatchTestResponse(BaseModel):
     dataset_sha256: str
     predictions: list[float]
     records: list[dict]
     drift_check: dict
-
-
-class RetrainRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    cutoff_timestamp: str
-
-    @field_validator("cutoff_timestamp")
-    @classmethod
-    def timestamp_is_hourly(cls, value):
-        return parse_timestamp(value).isoformat()
 
 
 class SimulationRequest(BaseModel):

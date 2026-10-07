@@ -325,6 +325,11 @@ def _log_and_register(
         mlflow.log_params(
             {key: metadata[key] for key in ("epochs", "seed", "seq_len", "mode")}
         )
+        for key in ("selected_candidate", "residual_alpha"):
+            if metadata.get(key) is not None:
+                mlflow.log_param(key, metadata[key])
+        for name, scores in metadata.get("selection_candidates", {}).items():
+            mlflow.log_metric(f"selection_{name}_rmse", scores["rmse"])
         mlflow.set_tags(
             {
                 "simulation": str(metadata.get("simulation", False)).lower(),
@@ -361,6 +366,8 @@ def _log_and_register(
             "gate_passed": bool(passed),
             "version": None,
         }
+        if "selected_candidate" in metadata:
+            result["selected_candidate"] = metadata["selected_candidate"]
         if passed:
             version = mlflow.register_model(
                 f"runs:/{run.info.run_id}/model", model_name
@@ -411,7 +418,7 @@ def fine_tune(
     metadata_extra=None,
     promote=True,
 ) -> dict:
-    """선택 7일과 마지막 검증 7일을 분리해 incumbent와 비교합니다."""
+    """앞선 7일에서 재학습 후보를 선택하고 마지막 7일로 승격을 판정합니다."""
     from tensorflow import keras
 
     from serving_app.model_loader import get_model
@@ -457,6 +464,24 @@ def fine_tune(
         optimizer=keras.optimizers.Adam(learning_rate=FINE_TUNE_LR), loss="mse"
     )
     _fit(model, incumbent.scaler, train, selection, epochs)
+    selection_candidates = {
+        "incumbent_fine_tune": _evaluate(model, selection, incumbent.scaler)["model"]
+    }
+    selected_candidate = "incumbent_fine_tune"
+    selected_alpha = None
+    from serving_app.daily_residual import fit_daily_residual
+    from serving_app.lstm_model import build_daily_residual
+
+    # Only the preceding selection week chooses structure/regularization.
+    # Final gate observations cannot change the winner or fitted weights.
+    for alpha in (0.001, 0.01, 0.1, 1.0):
+        candidate = build_daily_residual()
+        fit_daily_residual(candidate, incumbent.scaler, train, alpha=alpha)
+        name = f"daily_residual_alpha_{alpha:g}"
+        score = _evaluate(candidate, selection, incumbent.scaler)["model"]
+        selection_candidates[name] = score
+        if score["rmse"] < selection_candidates[selected_candidate]["rmse"]:
+            model, selected_candidate, selected_alpha = candidate, name, alpha
     scores = _evaluate(model, validation, incumbent.scaler)
     scores["incumbent"] = _evaluate(
         incumbent._keras_model, validation, incumbent.scaler
@@ -474,6 +499,10 @@ def fine_tune(
         selection_end=selection["timestamps"][-1],
         parent_version=incumbent.registry_version or incumbent.version,
         gate_passed=passed,
+        selected_candidate=selected_candidate,
+        residual_alpha=selected_alpha,
+        selection_candidates=selection_candidates,
+        candidate_selection_rule="minimum selection RMSE; final gate excluded",
     )
     metadata.update(metadata_extra or {})
     return _log_and_register(

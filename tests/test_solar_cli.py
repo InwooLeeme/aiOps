@@ -97,32 +97,8 @@ class CLITests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertFalse(json.loads(output.getvalue())["comparable"])
 
-    def test_replay_option_keeps_start_and_limit(self):
-        server, url = self.server()
-        output = io.StringIO()
-        with (
-            patch.object(cli, "TARGETS", {"local": url}),
-            contextlib.redirect_stdout(output),
-        ):
-            self.assertEqual(
-                cli.main(
-                    [
-                        "--scenario",
-                        "replay",
-                        "--start",
-                        "2024-06-01T00:00:00",
-                        "--limit",
-                        "84",
-                    ]
-                ),
-                0,
-            )
-        self.assertEqual(
-            server.received,
-            [
-                (
-                    "/predict/batch-test",
-                    {"start_timestamp": "2024-06-01T00:00:00", "limit": 84},
-                )
-            ],
-        )
+    def test_removed_replay_option_is_rejected_before_sending_requests(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as raised:
+                cli.main(["--scenario", "replay"])
+        self.assertEqual(raised.exception.code, 2)

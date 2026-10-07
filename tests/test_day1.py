@@ -104,53 +104,16 @@ class Day1Tests(unittest.TestCase):
                     "2024-01-11T19:00:00",
                 )
 
-    def test_replay_does_not_mix_repeated_batches_or_evaluate_training_dates(self):
-        self.assertTrue(
-            hasattr(
-                __import__("serving_app.routers.predict", fromlist=["replay"]), "replay"
-            ),
-            "CSV 이력 재생 필요",
-        )
-        csv_path = self.root / "solar_test.csv"
-        csv_path.write_bytes(csv_bytes(self.rows))
-        with (
-            patch(
-                "serving_app.routers.predict.latest_upload", return_value=str(csv_path)
-            ),
-            patch("serving_app.routers.predict.REPLAY_LOG", self.root / "replay.jsonl"),
-        ):
-            with TestClient(app) as client:
-                response = client.post(
-                    "/predict/batch-test",
-                    json={"start_timestamp": "2024-01-04T00:00:00", "limit": 168},
-                )
-                self.assertEqual(response.status_code, 200, response.text)
-                self.assertEqual(len(response.json()["records"]), 168)
-                again = client.post(
-                    "/predict/batch-test",
-                    json={"start_timestamp": "2024-01-04T00:00:00", "limit": 168},
-                )
-                self.assertEqual(again.json()["drift_check"]["count"], 168)
-                # Later replay errors must not authorize retraining in its past.
-                self.assertEqual(
-                    client.post(
-                        "/retrain", json={"cutoff_timestamp": "2024-01-05T00:00:00"}
-                    ).status_code,
-                    422,
-                )
-                self.assertEqual(
-                    client.post(
-                        "/predict/batch-test",
-                        json={"start_timestamp": "2023-01-01T00:00:00"},
-                    ).status_code,
-                    422,
-                )
-                self.assertEqual(
-                    client.post(
-                        "/retrain", json={"cutoff_timestamp": "2024-12-31T00:00:00"}
-                    ).status_code,
-                    422,
-                )
+    def test_removed_manual_features_are_not_exposed(self):
+        with TestClient(app) as client:
+            for path, payload in (
+                ("/predict/batch-test", {"start_timestamp": "2024-01-04T00:00:00"}),
+                ("/retrain", {"cutoff_timestamp": "2024-01-10T00:00:00"}),
+            ):
+                with self.subTest(path=path):
+                    response = client.post(path, json=payload)
+                    self.assertIn(response.status_code, (404, 405), response.text)
+                    self.assertNotIn(path, client.get("/openapi.json").json()["paths"])
 
     def test_missing_model_returns_actionable_service_error(self):
         with patch.object(

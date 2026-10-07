@@ -22,7 +22,7 @@ def log_path(request: Request) -> Path:
 
 
 async def record_prediction_request(request: Request, call_next):
-    if request.url.path not in {"/predict", "/predict/batch-test", "/simulation/run"}:
+    if request.url.path not in {"/predict", "/simulation/run"}:
         return await call_next(request)
     started = time.perf_counter()
     status = 500

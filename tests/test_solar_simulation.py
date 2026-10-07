@@ -97,11 +97,6 @@ class SimulationTests(unittest.TestCase):
         self.assertEqual(
             len((self.root / "replay.jsonl").read_text().splitlines()), 168
         )
-        manual = self.client.post(
-            "/retrain", json={"cutoff_timestamp": "2024-05-30T16:00:00"}
-        )
-        self.assertEqual(manual.json()["status"], "blocked")
-        self.assertEqual(self.train.call_count, 1)
 
     def test_switching_scenarios_does_not_repeat_same_training(self):
         self.run_batch("drift")

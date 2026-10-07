@@ -1,4 +1,4 @@
-"""태양광 다음 시간 예측, 과거 이력 재생, 관측 시점으로 제한한 재학습."""
+"""태양광 다음 시간 예측과 드리프트 시뮬레이션·자동 재학습."""
 
 import hashlib
 import json
@@ -11,20 +11,18 @@ from collections import deque
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from data.features import decode_csv, load_rows, parse_timestamp, sample_windows
+from data.features import decode_csv, parse_timestamp, sample_windows
 from data.storage import latest_upload
 from fastapi import APIRouter, HTTPException
 
 from serving_app import model_loader
 from serving_app.config import MODEL_NAME, RUNTIME_DIR
 from serving_app.monitoring.drift_detector import WINDOW_SIZE, assess_drift
-from serving_app.monitoring.retrain_trigger import check_and_trigger, retrain_at
+from serving_app.monitoring.retrain_trigger import check_and_trigger
 from serving_app.schemas import (
-    BatchTestRequest,
     BatchTestResponse,
     PredictRequest,
     PredictResponse,
-    RetrainRequest,
     SimulationRequest,
 )
 
@@ -65,28 +63,6 @@ def predict(req: PredictRequest):
         region="제주",
         model_version=model_identity(model),
     )
-
-
-@router.post("/predict/batch-test", response_model=BatchTestResponse)
-def replay(req: BatchTestRequest):
-    if not _replay_lock.acquire(blocking=False):
-        raise HTTPException(409, "다른 이력 재생 또는 재학습이 진행 중입니다")
-    try:
-        model = current_model()
-        try:
-            source = open_bytes(latest_upload())
-            rows = decode_csv(source)
-        except (FileNotFoundError, ValueError) as exc:
-            raise HTTPException(422, str(exc)) from exc
-        return evaluate_batch(
-            rows,
-            model,
-            req.start_timestamp,
-            req.limit,
-            hashlib.sha256(source).hexdigest(),
-        )
-    finally:
-        _replay_lock.release()
 
 
 def evaluate_batch(
@@ -237,7 +213,7 @@ def simulate(req: SimulationRequest):
     from serving_app.monitoring.simulation import run_simulation
 
     if not _replay_lock.acquire(blocking=False):
-        raise HTTPException(409, "다른 이력 재생 또는 재학습이 진행 중입니다")
+        raise HTTPException(409, "다른 시뮬레이션 또는 재학습이 진행 중입니다")
     try:
         if os.getenv("MODEL_SOURCE", "local") != "mlflow":
             raise HTTPException(422, "시뮬레이션은 MODEL_SOURCE=mlflow에서 실행하세요")
@@ -263,62 +239,6 @@ def simulate(req: SimulationRequest):
         SIMULATION_LOG.parent.mkdir(parents=True, exist_ok=True)
         with SIMULATION_LOG.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(result, ensure_ascii=False, allow_nan=False) + "\n")
-        return result
-    finally:
-        _replay_lock.release()
-
-
-@router.post("/retrain")
-def retrain(req: RetrainRequest):
-    if not _replay_lock.acquire(blocking=False):
-        raise HTTPException(409, "다른 이력 재생 또는 재학습이 진행 중입니다")
-    try:
-        if not _last_replay or req.cutoff_timestamp != _last_replay["cutoff"]:
-            raise HTTPException(
-                422, "재학습 기준은 마지막으로 평가한 실제 관측 시각과 같아야 합니다"
-            )
-        if os.getenv("MODEL_SOURCE", "local") != "mlflow":
-            return {
-                "status": "blocked",
-                "reason": "MLflow Production 모델 등록 후 "
-                "MODEL_SOURCE=mlflow로 실행하세요",
-            }
-        if _last_replay["check"]["status"] != "performance_degraded":
-            return {
-                "status": "blocked",
-                "reason": "최근 이력에서 지속적인 성능 저하가 확인되지 않았습니다",
-            }
-        if _last_replay.get("attempted"):
-            return {
-                "status": "blocked",
-                "reason": "이 관측 시점은 이미 재학습을 시도했습니다. "
-                "새 관측을 평가하세요",
-            }
-        model = current_model()
-        if model_identity(model) != _last_replay["model_version"]:
-            return {
-                "status": "blocked",
-                "reason": "현재 모델 버전으로 이력을 다시 평가하세요",
-            }
-        if _last_replay.get("synthetic"):
-            return {
-                "status": "blocked",
-                "reason": "합성 배치는 시뮬레이션 버튼의 자동 재학습을 사용하세요",
-            }
-        path = latest_upload()
-        if hashlib.sha256(open_bytes(path)).hexdigest() != _last_replay["dataset_hash"]:
-            raise HTTPException(
-                422, "데이터가 바뀌었습니다. 새 CSV로 이력을 다시 평가하세요"
-            )
-        try:
-            _last_replay["attempted"] = True
-            context_key = (_last_replay["dataset_hash"], _last_replay["model_version"])
-            _batch_contexts[context_key]["attempted"] = True
-            result = retrain_at(load_rows(path), req.cutoff_timestamp, incumbent=model)
-        except ValueError as exc:
-            return {"status": "blocked", "reason": str(exc)}
-        if result.get("promoted"):
-            recent_predictions.clear()
         return result
     finally:
         _replay_lock.release()
