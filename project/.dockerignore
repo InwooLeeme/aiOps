@@ -1,0 +1,7 @@
+runtime/
+logs/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.db
+.DS_Store

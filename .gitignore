@@ -18,3 +18,12 @@ dist/
 .DS_Store
 .idea/
 .vscode/
+
+# 실습 실행 결과
+logs/*.log
+project/runtime/
+project/logs/*.log
+project/data/uploads/*.csv
+*.db
+*.db-shm
+*.db-wal
