@@ -5,6 +5,8 @@ from datetime import timedelta
 
 from data.daily_features import parse_timestamp
 
+from serving_app.evaluation import wape_pct
+
 WINDOW_SIZE = 14
 
 
@@ -34,6 +36,9 @@ def assess_drift(records: list[dict], threshold: float | None) -> dict:
     result = {
         "count": len(recent),
         "rmse": compute_rmse(recent) if recent else None,
+        "wape_pct": wape_pct(
+            [r["actual"] for r in recent], [r["predicted"] for r in recent]
+        ),
         "threshold": threshold,
         "ready": ready,
         "unit": "MWh",

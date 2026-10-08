@@ -13,13 +13,13 @@ logger = logging.getLogger("solar_aiops")
 
 
 def inject_curtailment(rows):
-    """격일 발전량을 10%로 제한한 별도 사본."""
+    """3일마다 발전량을 10%로 제한한 별도 사본."""
     changed = []
     for source in rows:
         row = dict(source)
         if (
             row["generation_mwh"] is not None
-            and parse_timestamp(row["timestamp"]).toordinal() % 2 == 0
+            and parse_timestamp(row["timestamp"]).toordinal() % 3 == 0
         ):
             row["generation_mwh"] *= 0.1
         changed.append(row)
@@ -44,7 +44,7 @@ def run_simulation(
         source_hash
         if scenario == "normal"
         else hashlib.sha256(
-            (source_hash + ":daily-curtailment-v1").encode()
+            (source_hash + ":daily-curtailment-v2-every-3-days").encode()
         ).hexdigest()
     )
     base_version = model_identity(incumbent)
@@ -77,7 +77,7 @@ def run_simulation(
         "scenario": scenario,
         "description": "원본 데이터"
         if scenario == "normal"
-        else "격일로 일별 총발전량을 10%로 제한한 합성 시나리오",
+        else "3일마다 일별 총발전량을 10%로 제한한 합성 시나리오",
         "start_timestamp": start_timestamp,
         "cutoff_timestamp": batch.records[-1]["timestamp"],
         "base_model_version": base_version,

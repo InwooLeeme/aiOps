@@ -3,12 +3,13 @@ const $ = (id) => document.getElementById(id);
 const escapeHtml = (value) => String(value ?? "—").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const number = (value, digits = 0) => Number.isFinite(value) ? value.toLocaleString("ko-KR", {maximumFractionDigits: digits}) : "—";
 const energy = (value) => Number.isFinite(value) ? `${number(value, 2)} MWh` : "—";
+const wapeText = (value, recorded = value !== undefined) => Number.isFinite(value) ? `${number(value, 2)}%` : recorded ? "계산 불가" : "미기록";
 const windowLabels = {"5m":"최근 5분","1h":"최근 1시간","6h":"최근 6시간","24h":"최근 24시간"};
 const state = {tab:"dashboard", window:"5m", settings:null, dataset:null, models:null, lastRun:null, busy:false, refreshing:false};
 const stages = [
-  ["📥","관측값 연결","저장된 예측과 비교"],["📊","데이터 모니터링","예측 기록 누적"],
-  ["🔍","성능 저하 감지","RMSE vs 임계치"],["⚙️","재학습 요청","감지 시 자동 실행"],
-  ["📦","모델 학습","후보 학습·검증"],["🗂️","모델 등록","MLflow Registry"],["☁️","배포","Production 승격"]
+  ["01","관측값 연결","저장된 예측과 비교"],["02","데이터 모니터링","예측 기록 누적"],
+  ["03","성능 저하 감지","RMSE vs 임계치"],["04","재학습 요청","감지 시 자동 실행"],
+  ["05","모델 학습","후보 학습·검증"],["06","모델 등록","MLflow Registry"],["07","배포","Production 승격"]
 ];
 function pill(text, kind="neutral", dot=false) { return `<span class="pill ${kind}${dot ? " dot" : ""}">${escapeHtml(text)}</span>`; }
 function relativeTime(ts) {
@@ -36,34 +37,47 @@ function renderDataContext(data) {
   $("prediction-context").textContent=text;
 }
 function renderGate(trained) {
-  if(!trained){$("gate-comparison").textContent="재학습 실행 후 동일 검증 구간의 모델 비교를 표시합니다.";return;}
+  if(!trained){$("gate-comparison").innerHTML='<div class="gate-empty"><strong>모델 비교 대기</strong><span>재학습이 끝나면 동일 기간의 후보·기존 모델·기준 예측을 비교합니다.</span></div>';return;}
   const scores=trained.metrics?.validation;
   const registered=state.models?.versions?.find(v=>String(v.version)===String(trained.version));
-  const model={...trained,validation_start:trained.validation_start ?? registered?.validation_start,validation_end:trained.validation_end ?? registered?.validation_end,parent_version:trained.parent_version ?? registered?.parent_version,incumbent_rmse:scores?.incumbent?.rmse,rmse:scores?.model?.rmse ?? trained.rmse};
-  $("gate-comparison").textContent=`${validationPeriod(model)} · ${comparisonText(model)} · 최근 7일 평균 ${energy(scores?.weekly_mean?.rmse)} · 전날 기준 ${energy(scores?.persistence?.rmse)}`;
+  const period={validation_start:trained.validation_start ?? registered?.validation_start,validation_end:trained.validation_end ?? registered?.validation_end};
+  const rows=[["후보 모델",scores?.model],["기존 운영 모델",scores?.incumbent],["전날 발전량 유지",scores?.persistence],["최근 7일 평균",scores?.weekly_mean]];
+  $("gate-comparison").innerHTML=`<div class="gate-heading"><div><h3>동일 기간 검증 비교</h3><p>${escapeHtml(validationPeriod(period))} · 낮을수록 좋음</p></div>${pill(trainingOutcome(trained),trained.promoted ? "ok" : "warn")}</div><div class="table-wrap"><table><thead><tr><th>비교 대상</th><th>RMSE · 승격 기준</th><th>WAPE · 보조 지표</th></tr></thead><tbody>${rows.map(([name,score])=>`<tr><td>${escapeHtml(name)}</td><td>${energy(score?.rmse)}</td><td>${wapeText(score?.wape_pct)}</td></tr>`).join("")}</tbody></table></div><p class="inline-note">후보 RMSE가 기존 모델과 두 기준 예측보다 모두 낮아야 검증을 통과합니다.${trained.reason ? ` ${escapeHtml(trained.reason)}` : ""}</p>`;
+}
+function renderMonitoringSummary(check) {
+  const label=check.status === "threshold_unavailable" ? "기준 확인 필요" : !check.count ? "관측 대기" : !check.ready ? "관측 누적 중" : check.status === "performance_degraded" ? "성능 저하" : "정상 범위";
+  $("observation-count").textContent=`${number(check.count)} / 14일`;
+  $("monitor-state").textContent=label;
+  $("monitor-state").className=`metric-sub ${check.status === "performance_degraded" || check.status === "threshold_unavailable" ? "status-warn" : check.ready ? "status-ok" : ""}`;
+}
+function renderModelSummary(current) {
+  $("summary-model").textContent=current ? (current.stage === "Local" ? "로컬 모델" : `v${current.version}`) : "미로딩";
+  $("summary-origin").textContent=current ? `${current.stage ?? "스테이지 미확인"} · ${current.simulation ? "시연 데이터 학습" : "관측 데이터 학습"}` : "모델을 확인하세요";
+  const end=current?.validation_end;
+  const input=$("simulation-start");
+  if(end){
+    const day=new Date(`${end.slice(0,10)}T00:00:00Z`);day.setUTCDate(day.getUTCDate()+1);
+    if(Number.isFinite(day.getTime())){
+      input.min=day.toISOString().slice(0,10);
+      if(input.value && input.value < input.min)input.value="";
+      $("simulation-boundary").textContent=`현재 모델 검증 종료: ${dataTime(end)}. ${input.min} 이후 중 결측 없는 구간을 선택하세요.`;
+      return;
+    }
+  }
+  input.min="";
+  $("simulation-boundary").textContent="모델 검증 종료일을 확인할 수 없습니다. 모델 정보를 먼저 확인하세요.";
 }
 async function loadForecasts() {
   const data=await api("/predictions/recent");
   const check=data.monitoring;
-  $("forecast-pending").textContent=`관측 대기 ${number(data.pending_count)}건`;
+  renderMonitoringSummary(check);
   $("kpi-drift").textContent=check.rmse === null ? "관측 대기" : energy(check.rmse);
+  $("operating-wape").textContent=`WAPE ${check.count ? wapeText(check.wape_pct) : "관측 대기"}`;
   $("drift-caption").textContent=`현재 모델 · ${check.count}/14일 · ${check.ready ? "평가 가능" : "관측 누적 중"}`;
-  $("forecast-monitoring").textContent=`현재 모델의 사전 발행 예측 ${check.count}/14일 · ${check.ready ? (check.status === "performance_degraded" ? "성능 저하 감지" : "평가 가능") : "연속 14일이 모이면 성능 저하를 판정합니다."} 과거 점검·학습 범위 중복·시연 모델의 예측은 운영 집계에서 제외합니다.`;
-  const reason={historical:"과거 데이터 점검",training_overlap:"학습·검증 범위 중복",unknown_training_boundary:"학습 경계 미기록",simulation_model:"시연 데이터 학습 모델"};
-  $("forecast-history").innerHTML=data.records.length ? data.records.map(r=>`<tr><td>${escapeHtml(dataTime(r.target_timestamp))}</td><td>${escapeHtml(r.model_version)}</td><td>${number(r.predicted,2)} / ${number(r.actual,2)}</td><td>${energy(r.absolute_error_mwh)}</td><td>${escapeHtml(r.monitoring_eligible ? (r.actual === null ? "관측 대기" : "관측 연결 완료") : reason[r.exclusion_reason] ?? "집계 제외")}</td></tr>`).join("") : '<tr><td colspan="5" class="table-empty">저장된 예측이 없습니다. Simulation 탭에서 예측을 점검할 수 있습니다.</td></tr>';
-  renderForecastChart(data.records.filter(r=>r.monitoring_eligible && r.model_version === data.model_version && r.actual !== null));
   const last=data.last_evaluation;
   if(last?.check && (!state.lastRun || last.completed_at >= state.lastRun.ts)){
     state.lastRun={kind:"observation",check:last.check,retraining:last.check.retraining,ts:last.completed_at};renderPipeline();renderGate(last.check.retraining);
   }
-}
-function renderForecastChart(records) {
-  const rows=[...records].sort((a,b)=>a.target_timestamp.localeCompare(b.target_timestamp));
-  if(!rows.length){$("forecast-chart").innerHTML='<p class="empty">운영 예측과 실제 관측값이 연결되면 비교 그래프가 표시됩니다.</p>';return;}
-  const max=Math.max(1,...rows.flatMap(r=>[r.predicted,r.actual]));
-  const x=(i)=>36+i*600/Math.max(1,rows.length-1),y=(v)=>146-v/max*120;
-  const line=(key,color)=>`<polyline points="${rows.map((r,i)=>`${x(i)},${y(r[key])}`).join(" ")}" fill="none" stroke="${color}" stroke-width="2"/>${rows.map((r,i)=>`<circle cx="${x(i)}" cy="${y(r[key])}" r="3" fill="${color}"/>`).join("")}`;
-  $("forecast-chart").innerHTML=`<svg viewBox="0 0 676 180" role="img" aria-label="현재 모델의 예측과 실제 발전량 비교, 단위 MWh"><text x="0" y="18">${number(max,1)} MWh</text><line x1="36" y1="146" x2="636" y2="146" stroke="#e0e5f1"/>${line("predicted","#2f6df6")}${line("actual","#00ad4d")}<text x="36" y="172">${escapeHtml(dataTime(rows[0].target_timestamp))}</text><text x="636" y="172" text-anchor="end">${escapeHtml(dataTime(rows.at(-1).target_timestamp))}</text></svg><p class="chart-legend"><span>● 예측</span><span>● 실제</span></p>`;
 }
 async function api(path, options={}) {
   const controller = new AbortController();
@@ -116,11 +130,11 @@ function switchTab(tab, focus=false) {
 }
 async function loadSystem() {
   const data = await api("/system/info"); state.settings = data;
-  $("model-source").textContent = `MODEL_SOURCE=${data.model_source}`;
+  $("model-source").textContent = data.model_source === "mlflow" ? "MLflow Registry" : "로컬 모델";
   $("sequence-length").textContent = data.seq_len;
   $("minimum-rows").textContent = data.seq_len;
   $("system-stats").innerHTML = [
-    ["입력 일수",`${data.seq_len}일`],["입력 피처",data.n_features],["예측 단위",data.unit],["예측 대상",`다음 ${data.horizon_days}일 총발전량`],["기준 모델 RMSE",energy(data.rmse_gate)],["드리프트 윈도우",data.window_size],
+    ["입력 관측 기간",`${data.seq_len}일`],["입력 피처",data.n_features],["예측 단위",data.unit],["예측 대상",`다음 ${data.horizon_days}일 총발전량`],["기준 모델 RMSE",energy(data.rmse_gate)],["성능 평가 기간",`${data.window_size}일`],
     ["성능 저하 임계값",energy(data.rmse_threshold)],["BASE EPOCHS",data.base_epochs],
     ["FINE-TUNE EPOCHS",data.fine_tune_epochs],["FINE-TUNE LR",data.fine_tune_lr],
     ["MODEL_SOURCE",data.model_source],["LOADING_MODE",data.loading_mode]
@@ -143,7 +157,7 @@ async function loadDataset(fillExample=false) {
   const filename = document.createElement("code"); filename.textContent = data.filename; description.append(filename);
   description.append(document.createTextNode(` · ${data.source === "sample" ? "기본 샘플" : "업로드"} · ${data.region} 일별 데이터 · 날짜는 KST입니다.`));
   $("dataset-stats").innerHTML = [
-    ["행 수",number(data.rows)],["시작 시각",data.start_date],["종료 시각",data.end_date],
+    ["행 수",number(data.rows)],["시작 날짜",dataTime(data.start_date)],["종료 날짜",dataTime(data.end_date)],
     ["최소 발전량",energy(data.min_generation_mwh)],["최대 발전량",energy(data.max_generation_mwh)],
     ["설비용량",`${number(data.capacity_mw,2)} MW`],["누락 날짜",number(data.missing_days)], ["완전한 관측일",number(data.complete_days)], ["결측 포함 날짜",number(data.incomplete_days)],
     ["발전량 결측",number(data.missing_targets)],
@@ -175,6 +189,7 @@ async function loadModels() {
   state.models = data;
   $("current-model-name").textContent = data.model_name;
   const current = data.served_model ?? (data.source === "mlflow" ? data.production : null);
+  renderModelSummary(current);
   const experimental = data.source === "local" && current?.gate_passed === false;
   $("model-health").className = `pill dot ${experimental ? "warn" : health.model_loaded ? "ok" : "neutral"}`;
   $("model-health").textContent = experimental ? "검증 미통과 · 실험용" : health.model_loaded ? "로딩됨" : "로딩 대기";
@@ -182,6 +197,8 @@ async function loadModels() {
   $("current-stage").textContent = current?.stage ?? (data.source === "local" ? "Local" : "—");
   $("current-mode").textContent = modeLabel(current?.mode);
   $("current-rmse").textContent = energy(current?.rmse);
+  $("current-wape").textContent=wapeText(current?.wape_pct,current?.wape_recorded ?? false);
+  $("validation-wape").textContent=`WAPE ${wapeText(current?.wape_pct,current?.wape_recorded ?? false)}`;
   $("current-period").textContent=validationPeriod(current);
   $("rmse-caption").textContent=validationPeriod(current);
   $("current-time").textContent = registeredTime(current?.created_at);
@@ -190,7 +207,7 @@ async function loadModels() {
   $("registry-message").textContent = data.message ?? ""; $("registry-message").hidden = !data.message;
   $("kpi-rmse").textContent = energy(current?.rmse);
   $("spark-rmse").replaceChildren();
-  $("model-history").innerHTML = data.versions.length ? data.versions.map((v)=>`<tr><td><strong>v${escapeHtml(v.version)}</strong></td><td>${escapeHtml(registeredTime(v.created_at))}</td><td>${pill(modeLabel(v.mode))}<br><small>${v.simulation ? "시연 데이터" : "학습 데이터"}</small></td><td class="period-cell">${escapeHtml(validationPeriod(v))}</td><td>${energy(v.rmse)}</td><td>${escapeHtml(comparisonText(v))}</td><td>${pill(v.stage,v.stage === "Production" ? "ok" : "neutral",v.stage === "Production")}</td></tr>`).join("") : '<tr><td colspan="7" class="table-empty">등록된 모델 버전이 없습니다.</td></tr>';
+  $("model-history").innerHTML = data.versions.length ? data.versions.map((v)=>`<tr><td><strong>v${escapeHtml(v.version)}</strong></td><td>${escapeHtml(registeredTime(v.created_at))}</td><td>${pill(modeLabel(v.mode))}<br><small>${v.simulation ? "시연 데이터" : "학습 데이터"}</small></td><td class="period-cell">${escapeHtml(validationPeriod(v))}</td><td>${energy(v.rmse)}<br><small>WAPE ${wapeText(v.wape_pct,v.wape_recorded ?? false)}</small></td><td>${escapeHtml(comparisonText(v))}</td><td>${pill(v.stage,v.stage === "Production" ? "ok" : "neutral",v.stage === "Production")}</td></tr>`).join("") : '<tr><td colspan="7" class="table-empty">등록된 모델 버전이 없습니다.</td></tr>';
 }
 async function loadEvents() {
   const events = await api("/events/recent");
@@ -242,7 +259,30 @@ async function predict() {
   } catch(e) {$("prediction-status").innerHTML=pill(`예측 실패${e.status ? ` (HTTP ${e.status})` : ""}`,"error",true);showResult("prediction-result",e.data ?? {detail:e.message},true);}
   finally {setBusy(false);await refreshDashboard();}
 }
+function renderBatchErrors(data) {
+  const records=(data?.records ?? []).filter(r=>typeof r.timestamp === "string" && Number.isFinite(r.predicted) && Number.isFinite(r.actual) && Number.isFinite(r.predicted-r.actual)).sort((a,b)=>a.timestamp.localeCompare(b.timestamp)).slice(-14);
+  if(!records.length){
+    $("batch-error-context").textContent="표시할 날짜별 예측·실제값이 없습니다.";
+    $("batch-error-chart").innerHTML='<p class="empty">Simulation에서 정상 또는 드리프트 배치를 실행하면 날짜별 오차를 표시합니다.</p>';
+    return;
+  }
+  const kind=data.scenario === "drift" ? "드리프트 합성 배치" : "정상 원본 배치";
+  $("batch-error-context").textContent=`평가 모델 v${data.base_model_version ?? "미기록"} · ${kind} · ${dataTime(records[0].timestamp)} ~ ${dataTime(records.at(-1).timestamp)} · ${records.length}일`;
+  const extent=Math.max(1,...records.map(r=>Math.abs(r.predicted-r.actual)));
+  const limit=Math.ceil(extent/10)*10, zero=150, half=108, left=72, width=820, step=width/records.length;
+  const grid=[limit,0,-limit].map(value=>{
+    const y=zero-value/limit*half;
+    return `<line class="${value===0 ? "error-zero" : "error-grid"}" x1="${left}" x2="${left+width}" y1="${y}" y2="${y}"/><text class="error-axis" x="${left-12}" y="${y+4}" text-anchor="end">${value>0 ? "+" : ""}${number(value)}</text>`;
+  }).join("");
+  const bars=records.map((r,i)=>{
+    const error=r.predicted-r.actual, x=left+step*(i+.5), h=Math.max(2,Math.abs(error)/limit*half), y=error>0 ? zero-h : error<0 ? zero : zero-1;
+    const label=`${dataTime(r.timestamp)} · 예측 ${energy(r.predicted)} · 실제 ${energy(r.actual)} · ${error>0 ? "과대 예측 +" : error<0 ? "과소 예측 " : "오차 없음 "}${energy(error)}`;
+    return `<g class="error-bar" tabindex="0" role="img" aria-label="${escapeHtml(label)}"><title>${escapeHtml(label)}</title><rect class="${error>0 ? "error-positive" : error<0 ? "error-negative" : "error-neutral"}" x="${x-Math.min(32,step*.6)/2}" y="${y}" width="${Math.min(32,step*.6)}" height="${h}" rx="3"/><text class="error-axis" x="${x}" y="278" text-anchor="middle">${escapeHtml(dataTime(r.timestamp).slice(5))}</text><text class="error-detail" x="${left}" y="308">${escapeHtml(label)}</text></g>`;
+  }).join("");
+  $("batch-error-chart").innerHTML=`<svg viewBox="0 0 920 324" role="group" aria-label="날짜별 예측 오차 막대 그래프. 0 위는 과대 예측, 아래는 과소 예측"><text class="error-axis" x="16" y="20">MWh</text>${grid}${bars}</svg>`;
+}
 function renderSimulation(data) {
+  renderBatchErrors(data);
   const check=data.drift_check, trained=data.retraining;
   const ts=data.completed_at ?? Date.now()/1000;
   if(!state.lastRun || ts >= state.lastRun.ts){state.lastRun={kind:"simulation",check,retraining:trained,reloadError:data.reload_error,ts};renderPipeline();renderGate(trained);}
@@ -250,11 +290,11 @@ function renderSimulation(data) {
   if(trained?.promoted){text=`자동 재학습 완료 → 운영 v${data.served_model_version} 승격·서빙 교체 완료`;}
   else if(trained){text=`${trainingOutcome(trained)} · 기존 운영 모델 유지${trained.reason ? ': '+trained.reason : ''}`;level="warn";}
 
-  $("simulation-status").innerHTML=pill(`[시뮬레이션] ${text}`,level,true);
+  $("simulation-status").innerHTML=pill(`[시뮬레이션] ${text}`,level,true)+`<p class="inline-note">최근 실행 구간: ${escapeHtml(dataTime(data.start_timestamp))} ~ ${escapeHtml(dataTime(data.cutoff_timestamp))} · 선택 중인 날짜와 다를 수 있습니다.</p>`;
   $("simulation-summary").innerHTML=[
     ["변형 전 기준 모델",`운영 v${data.base_model_version}`],
-    ["배치 RMSE",energy(check.rmse)],["감지 임계값",energy(check.threshold)],
-    ["재학습 검증 RMSE",energy(trained?.rmse)],["실행 후 서빙 모델",`${data.model_name} v${data.served_model_version}`],
+    ["배치 RMSE",energy(check.rmse)],["배치 WAPE",wapeText(check.wape_pct)],["감지 임계값",energy(check.threshold)],
+    ...(trained ? [["재학습 검증 RMSE",energy(trained.rmse)],["재학습 검증 WAPE",wapeText(trained.metrics?.validation?.model?.wape_pct)]] : []),["실행 후 서빙 모델",`${data.model_name} v${data.served_model_version}`],
     ["데이터",data.scenario === "drift" ? "출력 제한 합성 데이터" : "원본 관측값"]
   ].map(([label,value])=>stat(label,value)).join("");
   showResult("simulation-result",data);
@@ -262,11 +302,12 @@ function renderSimulation(data) {
 async function loadSimulation() {
   const data=await api("/simulation/status");
   if(data.exists) renderSimulation(data);
+  else renderBatchErrors(null);
 }
 async function sendSimulation(scenario) {
   if(state.busy) return;
   const start=$("simulation-start").value;
-  if(!start){$("simulation-status").textContent="시뮬레이션 시작 시각을 입력하세요.";return;}
+  if(!start){$("simulation-status").textContent="평가 시작 날짜를 선택하세요.";return;}
   setBusy(true);
   $("simulation-summary").replaceChildren();$("simulation-result").hidden=true;
   $("simulation-status").innerHTML=pill("배치 평가 중… 성능 저하가 감지되면 자동으로 재학습·검증합니다.","warn",true);
@@ -290,7 +331,7 @@ async function upload() {
 }
 function onClick(id,action){$(id).addEventListener("click",()=>Promise.resolve().then(action).catch((e)=>displayError(e,"connection-error")));}
 async function init() {
-  updateClock();renderPipeline();
+  updateClock();renderPipeline();renderGate(null);
   document.querySelectorAll("[data-tab]").forEach((button)=>button.addEventListener("click",()=>{location.hash=button.dataset.tab;switchTab(button.dataset.tab);}));
   document.querySelector(".tabs").addEventListener("keydown",(e)=>{
     if(!["ArrowLeft","ArrowRight","Home","End"].includes(e.key))return;

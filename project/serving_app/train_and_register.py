@@ -30,6 +30,7 @@ from serving_app.config import (
     PROJECT_ROOT,
     SEED,
 )
+from serving_app.evaluation import wape_pct
 
 
 def evaluate_predictions(y_true, y_pred, timestamps) -> dict:
@@ -43,12 +44,14 @@ def evaluate_predictions(y_true, y_pred, timestamps) -> dict:
     for month in sorted({t[:7] for t in timestamps}):
         mask = np.asarray([t.startswith(month) for t in timestamps])
         monthly[month] = {
+            "wape_pct": wape_pct(truth[mask], prediction[mask]),
             "mae": float(np.mean(np.abs(errors[mask]))),
             "rmse": float(np.sqrt(np.mean(errors[mask] ** 2))),
             "n_samples": int(mask.sum()),
         }
     return {
         "monthly": monthly,
+        "wape_pct": wape_pct(truth, prediction),
         "mae": float(np.mean(np.abs(errors))),
         "rmse": float(np.sqrt(np.mean(errors**2))),
         "n_samples": len(truth),
@@ -357,6 +360,9 @@ def _log_and_register(
             {
                 "simulation": str(metadata.get("simulation", False)).lower(),
                 "target_model": model_name,
+                "wape_evaluated": str(
+                    "wape_pct" in metadata["metrics"]["validation"]["model"]
+                ).lower(),
             }
         )
         for split, methods in metadata["metrics"].items():
@@ -365,9 +371,10 @@ def _log_and_register(
                     if metric == "monthly":
                         for month, monthly_scores in value.items():
                             for key, number in monthly_scores.items():
-                                mlflow.log_metric(
-                                    f"{split}_{method}_{month}_{key}", number
-                                )
+                                if number is not None:
+                                    mlflow.log_metric(
+                                        f"{split}_{method}_{month}_{key}", number
+                                    )
                     elif value is not None:
                         mlflow.log_metric(f"{split}_{method}_{metric}", value)
         mlflow.log_metric("rmse", metadata["metrics"]["validation"]["model"]["rmse"])

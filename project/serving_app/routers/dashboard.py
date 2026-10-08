@@ -82,6 +82,9 @@ def version_info(client: MlflowClient, version) -> dict:
         "stage": version.current_stage,
         "mode": mode,
         "rmse": score if score is not None and math.isfinite(score) else None,
+        "wape_pct": finite_metric(metrics.get("validation_model_wape_pct")),
+        "wape_recorded": "validation_model_wape_pct" in metrics
+        or tags.get("wape_evaluated") == "true",
         "validation_start": params.get("validation_start")
         or metadata.get("validation_start"),
         "validation_end": params.get("validation_end")
@@ -89,6 +92,9 @@ def version_info(client: MlflowClient, version) -> dict:
         "parent_version": params.get("parent_version")
         or metadata.get("parent_version"),
         "incumbent_rmse": finite_metric(metrics.get("validation_incumbent_rmse")),
+        "incumbent_wape_pct": finite_metric(
+            metrics.get("validation_incumbent_wape_pct")
+        ),
         "weekly_mean_rmse": finite_metric(metrics.get("validation_weekly_mean_rmse")),
         "persistence_rmse": finite_metric(metrics.get("validation_persistence_rmse")),
         "simulation": tags.get("simulation") == "true"
@@ -118,6 +124,11 @@ def models_overview():
                 model_metadata().get("validation_metrics", {}).get("rmse")
             ),
             "mode": model_metadata().get("mode"),
+            "wape_pct": finite_metric(
+                model_metadata().get("validation_metrics", {}).get("wape_pct")
+            ),
+            "wape_recorded": "wape_pct"
+            in model_metadata().get("validation_metrics", {}),
             "gate_passed": model_metadata().get("gate_passed"),
             "stage": "Local" if source == "local" else "Unknown",
             "created_at": None,

@@ -1,6 +1,7 @@
 """버튼 배치의 운영 재학습, 데이터 보존, 중복 및 지표 검증."""
 
 import copy
+import hashlib
 import os
 import sys
 import tempfile
@@ -86,8 +87,8 @@ class SimulationTests(unittest.TestCase):
         history = self.train.call_args.args[0]
         self.assertEqual(history[-1]["timestamp"], "2024-05-14T00:00:00")
         by_time = {r["timestamp"]: r for r in history}
-        self.assertEqual(by_time["2024-05-04T00:00:00"]["generation_mwh"], 10)
-        self.assertEqual(by_time["2024-05-05T00:00:00"]["generation_mwh"], 100)
+        self.assertEqual(by_time["2024-05-04T00:00:00"]["generation_mwh"], 100)
+        self.assertEqual(by_time["2024-05-05T00:00:00"]["generation_mwh"], 10)
         self.assertTrue(self.train.call_args.kwargs["metadata_extra"]["simulation"])
         self.assertEqual(self.client.get("/simulation/status").json(), result)
         self.assertEqual(self.client.get("/metrics/summary").json()["request_count"], 2)
@@ -98,6 +99,21 @@ class SimulationTests(unittest.TestCase):
         self.assertEqual(again["drift_check"]["new_count"], 0)
         self.assertEqual(self.train.call_count, 1)
         self.assertEqual(len((self.root / "replay.jsonl").read_text().splitlines()), 14)
+
+    def test_new_curtailment_is_not_suppressed_by_legacy_batch_history(self):
+        source_hash = hashlib.sha256(self.path.read_bytes()).hexdigest()
+        legacy_hash = hashlib.sha256(
+            (source_hash + ":daily-curtailment-v1").encode()
+        ).hexdigest()
+        predict._batch_contexts[(legacy_hash, "1")] = {
+            "cutoff": "2024-05-14T00:00:00",
+            "records": [],
+            "check": {"rmse": 0.0, "status": "ok", "retraining": None},
+        }
+        result = self.run_batch("drift")
+        self.assertEqual(result["drift_check"]["new_count"], 14)
+        self.assertEqual(result["drift_check"]["status"], "performance_degraded")
+        self.assertEqual(result["retraining"]["status"], "gate_rejected")
 
     def test_switching_scenarios_does_not_repeat_same_training(self):
         self.run_batch("drift")
@@ -197,4 +213,8 @@ class SimulationTests(unittest.TestCase):
         self.assertIsNone(changed[0]["generation_mwh"])
         self.assertEqual(changed[1]["generation_mwh"], 10)
         self.assertEqual(changed[2]["generation_mwh"], 100)
+        self.assertEqual(
+            [r["generation_mwh"] for r in changed[1:7]],
+            [10, 100, 100, 10, 100, 100],
+        )
         self.assertEqual(self.rows, before)
