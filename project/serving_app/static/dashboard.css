@@ -919,6 +919,12 @@ footer { display:flex; justify-content:space-between; gap:12px; text-align:left;
 .error-detail { opacity:0; fill:#233f55; font-size:13px; pointer-events:none; }
 .error-bar:hover .error-detail,.error-bar:focus .error-detail { opacity:1; }
 .batch-error-card .inline-note { margin-bottom:0; }
+.wape-normal { color:#286bb3; }
+.wape-drift { color:#b85b2c; }
+.wape-point { outline:none; }
+.wape-point:hover .wape-mark,.wape-point:focus .wape-mark { stroke-width:4; }
+.wape-point:hover .error-detail,.wape-point:focus .error-detail { opacity:1; }
+.wape-history-card details { margin-top:16px; }
 .prediction-result-card { margin-top:20px; padding:24px; border:1px solid #d7e3ed; border-radius:10px; background:#f5f9fc; }
 .prediction-card-head { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; }
 .prediction-card-head h3 { margin:0; font-size:14px; color:#385367; }

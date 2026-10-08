@@ -92,15 +92,16 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(result["drift_check"]["new_count"], 0)
         self.assertEqual(len((self.root / "replay.jsonl").read_text().splitlines()), 14)
 
-    def test_overlap_only_adds_new_hours_and_reverse_replay_is_rejected(self):
+    def test_overlap_only_adds_new_days_and_reverse_replay_only_evaluates(self):
         self.evaluate(limit=8)
         result = self.evaluate("2024-02-05T00:00:00", 10)
         self.assertEqual(result["drift_check"]["count"], 14)
         self.assertEqual(result["drift_check"]["new_count"], 6)
         self.assertEqual(self.training.call_count, 1)
-        with self.assertRaises(HTTPException) as raised:
-            self.evaluate("2024-01-20T00:00:00")
-        self.assertEqual(raised.exception.status_code, 409)
+        result = self.evaluate("2024-01-20T00:00:00")
+        self.assertTrue(result["drift_check"]["evaluation_only"])
+        self.assertIsNone(result["drift_check"]["retraining"])
+        self.assertEqual(self.training.call_count, 1)
         self.assertEqual(predict._last_replay["cutoff"], "2024-02-14T00:00:00")
 
     def test_dataset_or_model_change_starts_fresh_monitoring_window(self):
@@ -133,7 +134,7 @@ class PipelineTests(unittest.TestCase):
         predict.recent_predictions.clear()
         self.model.metadata["drift_threshold_mwh"] = 10.0
         with patch.dict(os.environ, {"MODEL_SOURCE": "local"}):
-            result = self.evaluate()
+            result = self.evaluate("2024-02-15T00:00:00")
         self.assertEqual(result["drift_check"]["retraining"]["status"], "blocked")
         self.training.assert_not_called()
 

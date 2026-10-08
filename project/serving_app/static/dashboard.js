@@ -230,9 +230,15 @@ function renderPipeline() {
       statuses[5]=[trained.promoted ? "ok" : "warn",trained.promoted ? "등록 완료" : trainingOutcome(trained)];
       statuses[6]=[trained.promoted ? "ok" : "idle",trained.promoted ? "운영 모델 교체 완료" : "기존 버전 유지"];
     } else if(check.ready) statuses[3]=["idle",drift ? "미실행" : "불필요"];
+    if(check.evaluation_only) {
+      statuses[3]=["idle","재평가 · 미실행"];
+      statuses[4]=["idle","미실행"];
+      statuses[5]=["idle","미실행"];
+      statuses[6]=["idle","기존 버전 유지"];
+    }
 
   }
-  $("pipeline-run-badge").textContent = state.lastRun ? `${state.lastRun.kind === "simulation" ? "시연" : "운영 관측"} · ${relativeTime(state.lastRun.ts)}` : "아직 실행 안 함";
+  $("pipeline-run-badge").textContent = state.lastRun ? `${state.lastRun.check.evaluation_only ? "재평가" : state.lastRun.kind === "simulation" ? "시연" : "운영 관측"} · ${relativeTime(state.lastRun.ts)}` : "아직 실행 안 함";
   $("pipeline-track").innerHTML=stages.map(([icon,title,desc],i)=>`<div class="pipe-stage ${statuses[i][0]}"><div class="pipe-icon" aria-hidden="true">${icon}</div><div class="pipe-title">${title}</div><div class="pipe-desc">${desc}</div><div class="pipe-status">${statuses[i][1]}</div></div>`).join("");
 }
 function setBusy(value) {
@@ -242,7 +248,7 @@ async function refreshDashboard() {
   if(state.refreshing) return;
   state.refreshing=true;
   try {
-    const results=await Promise.allSettled([loadMetrics(),loadSystem().then(loadModels),loadEvents(),loadForecasts()]);
+    const results=await Promise.allSettled([loadMetrics(),loadSystem().then(loadModels),loadEvents(),loadForecasts(),loadWapeHistory()]);
     const failed=results.find((r)=>r.status === "rejected");
     if(failed) displayError(failed.reason,"connection-error"); else $("connection-error").hidden=true;
   } finally {state.refreshing=false;}
@@ -304,13 +310,60 @@ function renderBatchErrors(data) {
   }).join("");
   $("batch-error-chart").innerHTML=`<svg viewBox="0 0 920 324" role="group" aria-label="날짜별 예측 오차 막대 그래프. 0 위는 과대 예측, 아래는 과소 예측"><text class="error-axis" x="16" y="20">MWh</text>${grid}${bars}</svg>`;
 }
+function renderWapeHistory(data) {
+  const latest=new Map();
+  for(const b of data.batches ?? []) {
+    const key=JSON.stringify([b.start_timestamp,b.cutoff_timestamp,b.base_model_version,b.scenario]);
+    if(!latest.has(key) || (b.completed_at ?? 0)>=(latest.get(key).completed_at ?? 0))latest.set(key,b);
+  }
+  const batches=[...latest.values()].sort((a,b)=>(a.start_timestamp ?? "").localeCompare(b.start_timestamp ?? "") || (a.cutoff_timestamp ?? "").localeCompare(b.cutoff_timestamp ?? "") || (a.completed_at ?? 0)-(b.completed_at ?? 0));
+  const kind=b=>b.scenario === "drift" ? "드리프트" : "정상";
+  const mode=b=>b.evaluation_only === true ? "재평가" : b.evaluation_only === false ? "새 관측 포함" : "구분 미기록";
+  const period=b=>`${dataTime(b.start_timestamp)} ~ ${dataTime(b.cutoff_timestamp)}`;
+  $("wape-history-rows").innerHTML=batches.length ? batches.map(b=>`<tr><td>${escapeHtml(period(b))}</td><td>${kind(b)}</td><td>v${escapeHtml(b.base_model_version ?? "미기록")}</td><td>${wapeText(b.wape_pct)}</td><td>${mode(b)}</td></tr>`).join("") : '<tr><td colspan="5" class="table-empty">배치 기록이 없습니다.</td></tr>';
+  const valid=batches.filter(b=>Number.isFinite(b.wape_pct) && b.wape_pct>=0);
+  $("wape-history-context").textContent=`최근 실행 ${(data.batches ?? []).length}건 중 중복을 합친 ${batches.length}개 결과 · 같은 기간·모델·시나리오는 최신 결과 표시${batches.length!==valid.length ? ` · 계산 불가 ${batches.length-valid.length}건` : ""}`;
+  if(!valid.length){$("wape-history-chart").innerHTML=`<p class="empty">${batches.length ? "계산 가능한 WAPE가 없습니다. 실제 발전량 합과 관측값을 확인하세요." : "Simulation에서 배치를 실행하면 WAPE 추이를 표시합니다."}</p>`;return;}
+  const top=32,bottom=218,left=68,width=822,max=Math.max(10,Math.ceil(Math.max(...valid.map(b=>b.wape_pct))/10)*10);
+  const periodKey=b=>JSON.stringify([b.start_timestamp,b.cutoff_timestamp]);
+  const periods=[...new Map(batches.map(b=>[periodKey(b),b])).values()];
+  const periodIndex=new Map(periods.map((b,i)=>[periodKey(b),i]));
+  const xFor=b=>left+width*(periodIndex.get(periodKey(b))+.5)/periods.length;
+  const yFor=b=>bottom-b.wape_pct/max*(bottom-top);
+  const colorFor=b=>b.scenario === "drift" ? "#cd7548" : "#4a86c5";
+  const grid=[0,max/2,max].map(v=>{const y=bottom-v/max*(bottom-top);return `<line class="error-grid" x1="${left}" x2="${left+width}" y1="${y}" y2="${y}"/><text class="error-axis" x="${left-10}" y="${y+4}" text-anchor="end">${number(v)}%</text>`;}).join("");
+  const axes=periods.map((b,i)=>i%Math.ceil(periods.length/6)===0 || i===periods.length-1 ? `<text class="error-axis" x="${xFor(b)}" y="242" text-anchor="middle">${escapeHtml(dataTime(b.start_timestamp).slice(5))}</text><text class="error-axis" x="${xFor(b)}" y="259" text-anchor="middle">~ ${escapeHtml(dataTime(b.cutoff_timestamp).slice(5))}</text>` : "").join("");
+  let lines="";
+  for(const scenario of ["normal","drift"]) {
+    let segment=[];
+    const flush=()=>{if(segment.length>1)lines+=`<polyline class="wape-line" fill="none" stroke="${colorFor(segment[0])}" stroke-width="2.5" stroke-linejoin="round" points="${segment.map(b=>`${xFor(b)},${yFor(b)}`).join(" ")}"/>`;segment=[];};
+    for(const b of batches.filter(b=>b.scenario===scenario)) {
+      if(!Number.isFinite(b.wape_pct) || b.wape_pct<0 || b.base_model_version==null){flush();continue;}
+      if(segment.length && segment.at(-1).base_model_version!==b.base_model_version)flush();
+      segment.push(b);
+    }
+    flush();
+  }
+  const points=valid.map(b=>{
+    const x=xFor(b),y=yFor(b),color=colorFor(b);
+    const label=`${period(b)} · ${kind(b)} · 평가 v${b.base_model_version ?? "미기록"} · WAPE ${wapeText(b.wape_pct)} · ${mode(b)}`;
+    const marker=b.evaluation_only === true ? `<path class="wape-mark wape-reevaluation" d="M ${x} ${y-7} l 7 7 -7 7 -7 -7 Z" fill="white" stroke="${color}" stroke-width="2"/>` : `<circle class="wape-mark" cx="${x}" cy="${y}" r="5" fill="${b.evaluation_only === false ? color : "white"}" stroke="${color}" stroke-width="2"/>`;
+    return `<g class="wape-point" tabindex="0" role="img" aria-label="${escapeHtml(label)}"><title>${escapeHtml(label)}</title>${marker}<text class="error-detail" x="${left}" y="294">${escapeHtml(label)}</text></g>`;
+  }).join("");
+  $("wape-history-chart").innerHTML=`<svg viewBox="0 0 920 312" role="group" aria-label="정상·드리프트 배치 WAPE 꺾은선 그래프"><text class="error-axis" x="14" y="18">WAPE</text>${grid}${lines}${points}${axes}</svg>`;
+}
+async function loadWapeHistory() {
+  try {renderWapeHistory(await api("/simulation/history"));}
+  catch(e){$("wape-history-context").textContent="WAPE 기록 조회 실패 · 다음 새로고침에서 다시 확인합니다.";throw e;}
+}
 function renderSimulation(data) {
   renderBatchErrors(data);
   const check=data.drift_check, trained=data.retraining;
   const ts=data.completed_at ?? Date.now()/1000;
   if(!state.lastRun || ts >= state.lastRun.ts){state.lastRun={kind:"simulation",check,retraining:trained,reloadError:data.reload_error,ts};renderPipeline();renderGate(trained);}
   let text="정상 · 자동 재학습 불필요", level="ok";
-  if(trained?.promoted){text=`자동 재학습 완료 → 운영 v${data.served_model_version} 승격·서빙 교체 완료`;}
+  if(check.evaluation_only){text=`재평가 완료 · ${check.status === "performance_degraded" ? "성능 저하 감지" : "정상 범위"} · 감시 기록 반영 및 재학습·모델 교체 미실행`;level=check.status === "performance_degraded" ? "warn" : "neutral";}
+  else if(trained?.promoted){text=`자동 재학습 완료 → 운영 v${data.served_model_version} 승격·서빙 교체 완료`;}
   else if(trained){text=`${trainingOutcome(trained)} · 기존 운영 모델 유지${trained.reason ? ': '+trained.reason : ''}`;level="warn";}
 
   $("simulation-status").innerHTML=pill(`[시뮬레이션] ${text}`,level,true)+`<p class="inline-note">최근 실행 구간: ${escapeHtml(dataTime(data.start_timestamp))} ~ ${escapeHtml(dataTime(data.cutoff_timestamp))} · 선택 중인 날짜와 다를 수 있습니다.</p>`;

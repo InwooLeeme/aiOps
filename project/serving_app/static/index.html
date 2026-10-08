@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AIOps · 제주 태양광 모델 운영</title>
   <link rel="icon" href="/favicon.ico" />
-  <link rel="stylesheet" href="/dashboard.css?v=daily-ops-11" />
-  <script src="/dashboard.js?v=daily-ops-11" defer></script>
+  <link rel="stylesheet" href="/dashboard.css?v=daily-ops-14" />
+  <script src="/dashboard.js?v=daily-ops-14" defer></script>
 </head>
 <body>
   <header class="topnav">
@@ -56,6 +56,13 @@
         <div class="error-legend"><span class="error-positive">양수 · 과대 예측</span><span class="error-negative">음수 · 과소 예측</span><span>예측값 − 실제값 · MWh</span></div>
         <div id="batch-error-chart" class="batch-error-chart"><p class="empty">Simulation에서 정상 또는 드리프트 배치를 실행하면 날짜별 오차를 표시합니다.</p></div>
         <p class="inline-note">막대에 마우스를 올리거나 키보드로 선택하면 예측값·실제값·오차를 확인할 수 있습니다. 평가 당시 모델 기준이며, 실데이터 운영 성능 집계와는 별도입니다.</p>
+      </article>
+      <article class="card wape-history-card">
+        <div class="section-head-row"><div class="section-head"><span class="eyebrow">BATCH WAPE</span><h2>배치별 WAPE 추이</h2><p id="wape-history-context">시연 배치 기록을 불러오는 중입니다.</p></div><span class="pill neutral">낮을수록 좋음</span></div>
+        <div class="error-legend"><span class="wape-normal">● 정상 배치</span><span class="wape-drift">● 드리프트 배치</span><span>◇ 재평가</span><span>○ 구분 미기록</span></div>
+        <div id="wape-history-chart" class="batch-error-chart"><p class="empty">WAPE 기록을 불러오는 중입니다.</p></div>
+        <p class="inline-note">평가 기간순으로 정상·드리프트 추이를 연결합니다. 모델 버전이 바뀌거나 계산 불가 값이 있으면 선을 끊습니다. 점에 마우스를 올리거나 키보드로 선택하면 기간·모델·WAPE를 확인할 수 있습니다. 감지 기준은 RMSE이므로 WAPE 임계선은 표시하지 않습니다.</p>
+        <details><summary>배치별 수치 보기</summary><div class="table-wrap"><table><thead><tr><th>평가 기간 (KST)</th><th>배치</th><th>평가 모델</th><th>WAPE</th><th>실행 구분</th></tr></thead><tbody id="wape-history-rows"></tbody></table></div></details>
       </article>
       <div class="dashboard-grid">
         <article class="card model-card">

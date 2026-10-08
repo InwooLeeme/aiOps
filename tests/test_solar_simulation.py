@@ -2,6 +2,7 @@
 
 import copy
 import hashlib
+import json
 import os
 import sys
 import tempfile
@@ -66,10 +67,10 @@ class SimulationTests(unittest.TestCase):
         )
         self.client = self.stack.enter_context(TestClient(app))
 
-    def run_batch(self, scenario):
+    def run_batch(self, scenario, start="2024-05-01"):
         response = self.client.post(
             "/simulation/run",
-            json={"scenario": scenario, "start_timestamp": "2024-05-01"},
+            json={"scenario": scenario, "start_timestamp": start},
         )
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
@@ -97,8 +98,94 @@ class SimulationTests(unittest.TestCase):
         self.run_batch("drift")
         again = self.run_batch("drift")
         self.assertEqual(again["drift_check"]["new_count"], 0)
+        self.assertTrue(again["drift_check"]["evaluation_only"])
+        self.assertIsNone(again["retraining"])
         self.assertEqual(self.train.call_count, 1)
         self.assertEqual(len((self.root / "replay.jsonl").read_text().splitlines()), 14)
+
+    def test_past_batch_recomputes_errors_without_changing_monitoring(self):
+        self.run_batch("drift")
+        self.run_batch("normal")
+        before = copy.deepcopy(
+            (predict._batch_contexts, predict._last_replay, predict.recent_predictions)
+        )
+        logged = (self.root / "replay.jsonl").read_bytes()
+        # All synthetic actuals are 10 or 100, so a constant 200 is always high.
+        self.model.predict_one = lambda window: 200.0
+        result = self.run_batch("drift", "2024-04-01")
+        check = result["drift_check"]
+        self.assertTrue(check["evaluation_only"])
+        self.assertEqual(check["new_count"], 0)
+        self.assertEqual(check["status"], "performance_degraded")
+        self.assertGreater(check["rmse"], 100)
+        self.assertIsNone(result["retraining"])
+        self.assertEqual(result["served_model_version"], "1")
+        self.assertEqual(result["records"][0]["timestamp"], "2024-04-01T00:00:00")
+        self.assertEqual(self.train.call_count, 1)
+        self.assertEqual((self.root / "replay.jsonl").read_bytes(), logged)
+        self.assertEqual(
+            (predict._batch_contexts, predict._last_replay, predict.recent_predictions),
+            before,
+        )
+        continued = self.run_batch("drift", "2024-05-15")
+        self.assertFalse(continued["drift_check"]["evaluation_only"])
+        self.assertEqual(continued["drift_check"]["new_count"], 14)
+        self.assertEqual(self.train.call_count, 2)
+
+    def test_repeated_batch_after_restart_does_not_retrain(self):
+        self.run_batch("drift")
+        predict._batch_contexts.clear()
+        predict._last_replay.clear()
+        predict.recent_predictions.clear()
+        result = self.run_batch("drift")
+        self.assertTrue(result["drift_check"]["evaluation_only"])
+        self.assertIsNone(result["retraining"])
+        self.assertEqual(self.train.call_count, 1)
+        self.assertEqual(predict.recent_predictions, [])
+
+    def test_history_returns_batch_wape_and_reevaluation_without_records(self):
+        self.assertEqual(self.client.get("/simulation/history").json(), {"batches": []})
+        self.run_batch("normal")
+        self.run_batch("drift")
+        self.run_batch("drift")
+        response = self.client.get("/simulation/history?limit=2")
+        self.assertEqual(response.status_code, 200)
+        batches = response.json()["batches"]
+        self.assertEqual(len(batches), 2)
+        self.assertEqual([b["evaluation_only"] for b in batches], [False, True])
+        self.assertTrue(all(b["base_model_version"] == "1" for b in batches))
+        self.assertTrue(all(b["wape_pct"] > 0 for b in batches))
+        self.assertNotIn("records", batches[0])
+        self.assertEqual(self.train.call_count, 1)
+        self.assertEqual(
+            self.client.get("/simulation/history?limit=101").status_code, 422
+        )
+
+    def test_history_uses_selected_batch_errors_not_accumulated_monitoring_wape(self):
+        batch = {
+            "model_name": "JejuSolarDailyPredictor",
+            "scenario": "normal",
+            "start_timestamp": "2024-04-01",
+            "cutoff_timestamp": "2024-04-14",
+            "base_model_version": "1",
+            "served_model_version": "2",
+            "drift_check": {"wape_pct": 999},
+            "records": [
+                {"actual": 100, "predicted": 120},
+                {"actual": 300, "predicted": 240},
+            ],
+        }
+        zero = {**batch, "records": [{"actual": 0, "predicted": 10}]}
+        legacy = {**batch, "model_name": "JejuSolarSimulator"}
+        predict.SIMULATION_LOG.write_text(
+            "\n".join(map(json.dumps, [batch, zero, legacy]))
+        )
+        batches = self.client.get("/simulation/history").json()["batches"]
+        self.assertEqual(len(batches), 2)
+        self.assertEqual(batches[0]["wape_pct"], 20.0)
+        self.assertIsNone(batches[0]["evaluation_only"])
+        self.assertIsNone(batches[1]["wape_pct"])
+        self.train.assert_not_called()
 
     def test_new_curtailment_is_not_suppressed_by_legacy_batch_history(self):
         source_hash = hashlib.sha256(self.path.read_bytes()).hexdigest()

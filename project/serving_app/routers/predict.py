@@ -13,10 +13,11 @@ from zoneinfo import ZoneInfo
 
 from data.daily_features import decode_csv, parse_timestamp, sample_windows
 from data.storage import latest_upload
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from serving_app import forecasts, model_loader
 from serving_app.config import MODEL_NAME, RUNTIME_DIR
+from serving_app.evaluation import wape_pct
 from serving_app.monitoring.drift_detector import WINDOW_SIZE, assess_drift
 from serving_app.monitoring.retrain_trigger import check_and_trigger
 from serving_app.schemas import (
@@ -82,6 +83,23 @@ def prediction_history(request: Request):
     return forecasts.summary(forecasts.db_path(request), model_loader._model_cache)
 
 
+def batch_history(dataset_hash, identity):
+    """재시작 후에도 같은 관측으로 재학습하지 않도록 누적 로그를 읽는다."""
+    if not REPLAY_LOG.is_file():
+        return {}
+    records = {}
+    with REPLAY_LOG.open(encoding="utf-8") as stream:
+        for line in stream:
+            record = json.loads(line)
+            if (
+                record.get("dataset_sha256") == dataset_hash
+                and record.get("model_version") == identity
+            ):
+                records[record["timestamp"]] = record
+    recent = sorted(records.values(), key=lambda r: r["timestamp"])[-WINDOW_SIZE:]
+    return {"cutoff": recent[-1]["timestamp"], "records": recent} if recent else {}
+
+
 def evaluate_batch(
     rows,
     model,
@@ -106,8 +124,9 @@ def evaluate_batch(
     records = []
     identity = model_identity(model)
     context_key = (dataset_hash, identity)
-    previous = _batch_contexts.get(context_key, {})
-    same_context = bool(previous)
+    previous = _batch_contexts.get(context_key)
+    if previous is None:
+        previous = batch_history(dataset_hash, identity)
     observed_until = datetime.now(ZoneInfo("Asia/Seoul")).replace(tzinfo=None)
     for window, target in sample_windows(rows):
         if target["timestamp"] < start_timestamp:
@@ -139,9 +158,20 @@ def evaluate_batch(
         raise HTTPException(
             422, "시뮬레이션에는 결측 없는 연속 14일 평가 구간이 필요합니다"
         )
-    if same_context and records[-1]["timestamp"] < previous["cutoff"]:
-        raise HTTPException(
-            409, "이미 평가한 관측 시각보다 이전으로 재생할 수 없습니다"
+    threshold = model.metadata.get("drift_threshold_mwh")
+    if previous and records[-1]["timestamp"] <= previous["cutoff"]:
+        # 선택한 구간만 다시 평가하며 감시 상태·누적 로그·재학습은 건드리지 않는다.
+        return BatchTestResponse(
+            dataset_sha256=dataset_hash,
+            predictions=[r["predicted"] for r in records],
+            records=records,
+            drift_check={
+                **assess_drift(records, threshold),
+                "evaluation_only": True,
+                "new_count": 0,
+                "model_version": identity,
+                "retraining": None,
+            },
         )
     previous_cutoff = previous.get("cutoff", "")
     fresh = [r for r in records if r["timestamp"] > previous_cutoff]
@@ -162,7 +192,6 @@ def evaluate_batch(
                 )
                 + "\n"
             )
-    threshold = model.metadata.get("drift_threshold_mwh")
     recent_predictions[:] = accumulated
     _last_replay.clear()
     _last_replay.update(previous)
@@ -195,7 +224,12 @@ def evaluate_batch(
     else:
         check = {**_last_replay.get("check", assess_drift(accumulated, threshold))}
     _batch_contexts[context_key] = {**_last_replay, "records": accumulated}
-    check = {**check, "new_count": len(fresh), "model_version": identity}
+    check = {
+        **check,
+        "new_count": len(fresh),
+        "model_version": identity,
+        "evaluation_only": False,
+    }
     return BatchTestResponse(
         dataset_sha256=dataset_hash,
         predictions=[r["predicted"] for r in records],
@@ -223,6 +257,54 @@ def simulation_status():
             "reason": "이전 격리 시뮬레이터 기록은 운영 결과에서 제외합니다",
         }
     return result
+
+
+@router.get("/simulation/history")
+def simulation_history(limit: int = Query(default=30, ge=1, le=100)):
+    batches = deque(maxlen=limit)
+    if not SIMULATION_LOG.is_file():
+        return {"batches": []}
+    with SIMULATION_LOG.open(encoding="utf-8") as stream:
+        for line in stream:
+            try:
+                result = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # 실행 로그를 쓰는 도중의 불완전한 줄은 다음 조회에서 읽는다.
+            if result.get("model_name") != MODEL_NAME:
+                continue
+            records = result.get("records") or []
+            complete = bool(records) and all(
+                isinstance(r.get(key), (int, float)) and math.isfinite(r[key])
+                for r in records
+                for key in ("actual", "predicted")
+            )
+            score = (
+                wape_pct(
+                    [r["actual"] for r in records], [r["predicted"] for r in records]
+                )
+                if complete
+                else None
+            )
+            batches.append(
+                {
+                    **{
+                        key: result.get(key)
+                        for key in (
+                            "simulation_id",
+                            "start_timestamp",
+                            "cutoff_timestamp",
+                            "scenario",
+                            "base_model_version",
+                            "completed_at",
+                        )
+                    },
+                    "wape_pct": score,
+                    "evaluation_only": result.get("drift_check", {}).get(
+                        "evaluation_only"
+                    ),
+                }
+            )
+    return {"batches": list(batches)}
 
 
 @router.post("/simulation/run")

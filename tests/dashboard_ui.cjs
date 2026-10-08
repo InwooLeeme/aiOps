@@ -87,3 +87,54 @@ vm.runInContext('renderBatchErrors(errorBatch)',context);
 assert.ok(!elements.get('batch-error-chart').innerHTML.includes('<svg'));
 assert.ok(elements.get('batch-error-chart').innerHTML.includes('배치를 실행'));
 console.log('batch error chart checks passed');
+
+// Reevaluation must show the current detection result without claiming training.
+for (const [status,label] of [['performance_degraded','성능 저하 감지'],['ok','정상 범위']]) {
+  context.recheck={scenario:'drift',base_model_version:'3',served_model_version:'3',model_name:'test',completed_at:Date.now()/1000+10,drift_check:{status,ready:true,rmse:30,threshold:20,evaluation_only:true,new_count:0,retraining:null},retraining:null};
+  vm.runInContext('renderSimulation(recheck)',context);
+  const message=elements.get('simulation-status').innerHTML;
+  assert.ok(message.includes('재평가'),message);
+  assert.ok(message.includes(label),message);
+  assert.ok(message.includes('재학습·모델 교체 미실행'),message);
+  assert.ok(elements.get('pipeline-run-badge').textContent.includes('재평가'));
+  assert.ok(!elements.get('pipeline-track').innerHTML.includes('요청 완료'));
+}
+console.log('simulation reevaluation UI checks passed');
+
+context.wapeHistory={batches:[
+  {scenario:'drift',start_timestamp:'2024-09-20',cutoff_timestamp:'2024-10-03',base_model_version:'2',wape_pct:150,evaluation_only:true},
+  {scenario:'normal',start_timestamp:'2024-09-01',cutoff_timestamp:'2024-09-14',base_model_version:'1',wape_pct:0,evaluation_only:false},
+  {scenario:'normal',start_timestamp:'2024-09-02',cutoff_timestamp:'2024-09-15',base_model_version:'1',wape_pct:null,evaluation_only:null}
+]};
+vm.runInContext('renderWapeHistory(wapeHistory)',context);
+let wapeChart=elements.get('wape-history-chart').innerHTML;
+assert.ok(wapeChart.includes('150%'),'WAPE over 100% must remain visible');
+assert.ok(wapeChart.includes('0%'),'Zero error is valid');
+assert.ok(!/NaN|Infinity/.test(wapeChart));
+assert.ok(wapeChart.includes('wape-reevaluation'));
+assert.ok(wapeChart.indexOf('2024-09-01')<wapeChart.indexOf('2024-09-20'));
+assert.ok(elements.get('wape-history-rows').innerHTML.includes('계산 불가'));
+assert.ok(elements.get('wape-history-rows').innerHTML.includes('구분 미기록'));
+assert.ok(wapeChart.includes('평가 v2'));
+context.wapeHistory.batches=[];
+vm.runInContext('renderWapeHistory(wapeHistory)',context);
+assert.ok(!elements.get('wape-history-chart').innerHTML.includes('<svg'));
+console.log('batch WAPE chart checks passed');
+
+const batch=(day,scenario,version,value,time=1)=>({start_timestamp:`2024-09-${day}`,cutoff_timestamp:`2024-10-${day}`,scenario,base_model_version:version,wape_pct:value,completed_at:time,evaluation_only:false});
+context.lineHistory={batches:[
+  batch('01','normal','1',99,1),batch('01','normal','1',10,2),
+  batch('02','normal','1',20),batch('03','normal','2',30),batch('04','normal','2',40),
+  batch('01','drift','1',50),batch('02','drift','1',60),
+  batch('03','drift','1',null),batch('04','drift','1',70)
+]};
+vm.runInContext('renderWapeHistory(lineHistory)',context);
+wapeChart=elements.get('wape-history-chart').innerHTML;
+assert.ok(!wapeChart.includes('WAPE 99%'),'Only newest duplicate is plotted');
+const lines=[...wapeChart.matchAll(/<polyline class="wape-line"[^>]*points="([^"]+)"/g)];
+assert.equal(lines.length,3,'Two model segments for normal, one drift segment before missing value');
+assert.ok(lines.every(m=>m[1].trim().split(/\s+/).length===2),'Never connect across model changes or missing values');
+const markers=[...wapeChart.matchAll(/<circle class="wape-mark" cx="([^"]+)"/g)];
+assert.equal(markers.length,7);
+assert.equal(markers[0][1],markers[1][1],'Normal and drift from the same period share the x position');
+console.log('WAPE line grouping and deduplication checks passed');
