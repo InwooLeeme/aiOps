@@ -250,14 +250,14 @@ async function refreshDashboard() {
 function renderPrediction(data, payload) {
   const model=state.models?.versions?.find(v=>String(v.version)===String(data.model_version));
   const historical=data.forecast_context === "historical";
-  const contextLabel=historical ? "과거 데이터 점검" : data.monitoring_eligible ? "운영 예측" : "운영 집계 제외";
+  const contextLabel=historical ? "" : data.monitoring_eligible ? "운영 예측" : "운영 집계 제외";
   const simulation=model?.simulation || data.exclusion_reason === "simulation_model";
   const rows=[
     ["예측 대상일",`${dataTime(data.target_timestamp)} · KST`],
     ["입력 관측 기간",`${dataTime(payload.sequence?.[0]?.timestamp)} ~ ${dataTime(data.input_end_timestamp)} · ${payload.sequence?.length ?? "—"}일`],
     ["사용 모델",`v${data.model_version}`]
   ];
-  $("prediction-result-card").innerHTML=`<div class="prediction-card-head"><h3>다음 날 예상 발전량</h3><div>${pill(contextLabel,"neutral")}${simulation ? pill("시연 데이터 학습 모델","warn") : ""}</div></div><p class="prediction-energy">${number(data.predicted_generation_mwh,2)} <span>MWh</span></p><dl class="prediction-facts">${rows.map(([label,value])=>`<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>`;
+  $("prediction-result-card").innerHTML=`<div class="prediction-card-head"><h3>다음 날 예상 발전량</h3><div>${contextLabel ? pill(contextLabel,"neutral") : ""}${simulation ? pill("시연 데이터 학습 모델","warn") : ""}</div></div><p class="prediction-energy">${number(data.predicted_generation_mwh,2)} <span>MWh</span></p><dl class="prediction-facts">${rows.map(([label,value])=>`<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>`;
   $("prediction-result-card").hidden=false;
 }
 async function predict() {

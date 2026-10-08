@@ -22,7 +22,7 @@ vm.runInContext('refreshDashboard=async()=>{};state.models={versions:[{version:"
   resolve(result);await pending;
   assert.equal(el('prediction-result-card').hidden,false);
   let card=el('prediction-result-card').innerHTML;
-  for(const label of ['0','MWh','2025-01-01','2024-12-18','2024-12-31','v3','과거 데이터 점검','시연 데이터 학습 모델'])assert.ok(card.includes(label),label);
+  for(const label of ['0','MWh','2025-01-01','2024-12-18','2024-12-31','v3','시연 데이터 학습 모델'])assert.ok(card.includes(label),label);
   assert.ok(!card.includes('정확도'));
   context.api=async()=>{throw Object.assign(new Error('잘못된 입력'),{status:422,data:{detail:'잘못된 입력'}});};
   await vm.runInContext('predict()',context);
