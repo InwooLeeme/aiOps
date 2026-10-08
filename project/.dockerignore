@@ -1,8 +1,0 @@
-runtime/
-logs/
-data/uploads/
-serving_app/models/
-**/__pycache__/
-*.pyc
-*.db
-.DS_Store
