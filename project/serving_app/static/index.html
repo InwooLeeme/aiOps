@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AIOps · 제주 태양광 모델 운영</title>
   <link rel="icon" href="/favicon.ico" />
-  <link rel="stylesheet" href="/dashboard.css?v=daily-ops-9" />
-  <script src="/dashboard.js?v=daily-ops-9" defer></script>
+  <link rel="stylesheet" href="/dashboard.css?v=daily-ops-10" />
+  <script src="/dashboard.js?v=daily-ops-10" defer></script>
 </head>
 <body>
   <header class="topnav">
@@ -84,8 +84,9 @@
         <div id="prediction-context" class="context-strip"></div>
         <div class="btn-row"><button class="btn secondary" id="regenerate-example">업로드 데이터 불러오기</button><button class="btn primary inference-action" id="run-prediction">예측 실행</button></div>
         <div id="prediction-status" class="action-status" role="status"></div>
+        <div id="prediction-result-card" class="prediction-result-card" aria-live="polite" hidden></div>
         <details><summary>입력 JSON · 운영 예측 기준</summary><p class="inline-note">일자별 관측값은 해당 날짜가 끝난 뒤 사용합니다. 운영 예측은 KST 00:00~00:59에 직전 날짜까지의 데이터로 발행합니다. 그 밖의 과거 점검은 운영 성능 집계에서 제외됩니다.</p><label class="sr-only" for="prediction-input">예측 요청 JSON</label><textarea id="prediction-input" spellcheck="false" aria-describedby="prediction-status"></textarea></details>
-        <details><summary>예측 상세 JSON</summary><pre id="prediction-result" class="result-box" hidden></pre></details>
+        <details id="prediction-details"><summary>기술 상세 보기 · JSON</summary><pre id="prediction-result" class="result-box" hidden></pre></details>
       </article>
       <article class="card api-card">
         <div class="section-head-row"><div class="section-head"><h2>API 요청 상태</h2><p><span class="window-caption">최근 5분</span> · 화면 새로고침은 집계에서 제외합니다.</p></div><label class="auto-refresh"><input type="checkbox" id="auto-refresh" checked /> API 지표 5초마다 갱신</label></div>
