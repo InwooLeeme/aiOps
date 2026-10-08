@@ -10,8 +10,9 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "project"))
 import mlflow
 import numpy as np
+from daily_helpers import daily_rows as hourly_rows
 from data import storage
-from data.features import SolarScaler, load_rows
+from data.daily_features import SolarScaler, load_rows
 from fastapi.testclient import TestClient
 from serving_app import model_loader
 from serving_app import train_and_register as training
@@ -19,7 +20,6 @@ from serving_app.config import MODEL_NAME
 from serving_app.main import app
 from test_day1 import csv_bytes
 from test_day2 import constant_model
-from test_solar_data import hourly_rows
 
 
 class DataFallbackTests(unittest.TestCase):
@@ -30,13 +30,13 @@ class DataFallbackTests(unittest.TestCase):
         ):
             path = storage.latest_upload()
             rows = load_rows(path)
-            self.assertEqual(len(rows), 52248)
+            self.assertEqual(len(rows), 2192)
             self.assertEqual(rows[0]["timestamp"], "2019-01-01T00:00:00")
             with patch.dict(os.environ, LOADING_MODE="lazy"), TestClient(app) as client:
                 response = client.get("/data/preview")
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.json()["source"], "sample")
-            self.assertEqual(len(response.json()["example"]["sequence"]), 72)
+            self.assertEqual(len(response.json()["example"]["sequence"]), 14)
 
     def test_upload_preferred_and_bad_upload_not_silently_replaced(self):
         with tempfile.TemporaryDirectory() as root:
@@ -82,13 +82,13 @@ class BootstrapTests(unittest.TestCase):
         self.enterContext(
             patch.object(storage, "latest_upload", return_value=str(self.path))
         )
-        self.sequence = rows[:72]
+        self.sequence = rows[:14]
         scaler = SolarScaler().fit(rows)
         metadata = {
             "mode": "scratch",
             "epochs": 1,
             "seed": 42,
-            "seq_len": 72,
+            "seq_len": 14,
             "gate_passed": True,
             "error_threshold_mwh": 10.0,
             "metrics": {"validation": {"model": {"rmse": 1.0}}},
@@ -101,7 +101,7 @@ class BootstrapTests(unittest.TestCase):
                     constant_model(),
                     {
                         "scaler": scaler,
-                        "train": {"X": np.zeros((1, 72, 10), dtype="float32")},
+                        "train": {"X": np.zeros((1, 14, 8), dtype="float32")},
                     },
                     metadata,
                     True,
@@ -141,7 +141,8 @@ class BootstrapTests(unittest.TestCase):
             result = bootstrap.prepare_service()
             self.assertEqual(result["status"], "prepared")
             self.assertEqual(
-                model_loader.LOCAL_BUNDLE_DIR, self.root / "runtime/bootstrap-solar"
+                model_loader.LOCAL_BUNDLE_DIR,
+                self.root / "runtime/bootstrap-solar-daily",
             )
             self.assertEqual(list(mount.iterdir()), [])
             self.assertGreaterEqual(

@@ -12,7 +12,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "project"))
 
 import mlflow
-from data.features import SolarScaler
+from data.daily_features import SolarScaler
 from data.storage import latest_upload
 from fastapi.testclient import TestClient
 from mlflow.tracking import MlflowClient
@@ -25,6 +25,11 @@ class DashboardTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
+        self.enterContext(
+            patch.object(
+                app.state, "forecast_db_path", self.root / "forecasts.db", create=True
+            )
+        )
         self.log_path = self.root / "requests.log"
         self.env = patch.dict(
             os.environ, {"MODEL_SOURCE": "local", "LOADING_MODE": "lazy"}
@@ -41,7 +46,7 @@ class DashboardTests(unittest.TestCase):
         self.addCleanup(self.cache.stop)
 
     def test_metrics_count_real_predictions_and_validation_errors_only(self):
-        sequence = self.solar_rows(72)
+        sequence = self.solar_rows(14)
         cached = model_loader.LoadedModel(
             keras_model=lambda x, training=False: [[0.5]],
             scaler=SolarScaler().fit(sequence),
@@ -60,7 +65,7 @@ class DashboardTests(unittest.TestCase):
                 200,
             )
             self.assertEqual(
-                client.post("/predict", json={"sequence": sequence[:71]}).status_code,
+                client.post("/predict", json={"sequence": sequence[:13]}).status_code,
                 422,
             )
             summary = client.get("/metrics/summary").json()
@@ -99,7 +104,7 @@ class DashboardTests(unittest.TestCase):
         start = datetime(2024, 1, 1)
         return [
             {
-                "timestamp": (start + timedelta(hours=i)).isoformat(),
+                "timestamp": (start + timedelta(days=i)).isoformat(),
                 "region": "제주",
                 "generation_mwh": float(i % 10),
                 "capacity_mw": 100.0,
@@ -116,9 +121,9 @@ class DashboardTests(unittest.TestCase):
 
         rows = self.solar_rows(count)
         with path.open("w", encoding="utf-8", newline="") as stream:
-            writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
+            writer = csv.DictWriter(stream, fieldnames=[*rows[0], "granularity"])
             writer.writeheader()
-            writer.writerows(rows)
+            writer.writerows([{**r, "granularity": "daily"} for r in rows])
 
     def test_dataset_preview_uses_latest_upload_and_matches_prediction_input(self):
         csv_path = self.root / "latest.csv"
@@ -132,11 +137,11 @@ class DashboardTests(unittest.TestCase):
                 data = response.json()
                 self.assertEqual(data["rows"], 240)
                 self.assertEqual(data["region"], "제주")
-                self.assertEqual(data["missing_hours"], 0)
+                self.assertEqual(data["missing_days"], 0)
                 self.assertEqual(
                     (data["min_generation_mwh"], data["max_generation_mwh"]), (0, 9)
                 )
-                self.assertEqual(len(data["example"]["sequence"]), 72)
+                self.assertEqual(len(data["example"]["sequence"]), 14)
                 self.assertIn("timestamp", data["example"]["sequence"][0])
                 self.assertEqual(data["example"]["sequence"][-1]["capacity_mw"], 100)
 
@@ -161,8 +166,8 @@ class DashboardTests(unittest.TestCase):
                 self.assertEqual(response.json()["model_source"], "mlflow")
                 self.assertEqual(response.json()["loading_mode"], "eager")
                 self.assertEqual(response.json()["unit"], "MWh")
-                self.assertEqual(response.json()["seq_len"], 72)
-                self.assertEqual(response.json()["n_features"], 10)
+                self.assertEqual(response.json()["seq_len"], 14)
+                self.assertEqual(response.json()["n_features"], 8)
                 self.assertIsNone(response.json()["rmse_threshold"])
 
     def test_registry_history_keeps_archived_stage_and_flags_stale_serving_cache(self):

@@ -8,11 +8,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "project"))
-from data.features import COLUMN_MAP, SolarScaler
+from daily_helpers import daily_rows as hourly_rows
+from data.daily_features import COLUMN_MAP, SolarScaler
 from fastapi.testclient import TestClient
 from serving_app import model_loader
 from serving_app.main import app
-from test_solar_data import hourly_rows
 
 
 class MeanGenerationModel:
@@ -23,8 +23,8 @@ class MeanGenerationModel:
 def csv_bytes(rows):
     stream = io.StringIO()
     writer = csv.writer(stream)
-    writer.writerow(COLUMN_MAP)
-    writer.writerows([[r[v] for v in COLUMN_MAP.values()] for r in rows])
+    writer.writerow([*COLUMN_MAP.values(), "granularity"])
+    writer.writerows([[*[r[v] for v in COLUMN_MAP.values()], "daily"] for r in rows])
     return stream.getvalue().encode("cp949")
 
 
@@ -33,20 +33,25 @@ class Day1Tests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+        self.enterContext(
+            patch.object(
+                app.state, "forecast_db_path", self.root / "forecasts.db", create=True
+            )
+        )
         self.env = patch.dict(
             os.environ, {"LOADING_MODE": "lazy", "MODEL_SOURCE": "local"}
         )
         self.env.start()
         self.addCleanup(self.env.stop)
         self.rows = hourly_rows(260, "2024-01-01T00:00:00")
-        self.scaler = SolarScaler().fit(self.rows[:72])
+        self.scaler = SolarScaler().fit(self.rows[:14])
         self.model = model_loader.LoadedModel(
             MeanGenerationModel(),
             self.scaler,
             "test",
             metadata={
-                "validation_end": "2023-12-31T23:00:00",
-                "training_end": "2022-12-31T23:00:00",
+                "validation_end": "2023-12-31T00:00:00",
+                "training_end": "2022-12-31T00:00:00",
                 "drift_threshold_mwh": 10.0,
             },
         )
@@ -61,17 +66,17 @@ class Day1Tests(unittest.TestCase):
 
     def test_zero_generation_negative_temperature_and_decimal_wind_are_valid(self):
         with TestClient(app) as client:
-            response = client.post("/predict", json={"sequence": self.rows[:72]})
+            response = client.post("/predict", json={"sequence": self.rows[:14]})
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertAlmostEqual(response.json()["predicted_generation_mwh"], 11.5)
-        self.assertEqual(response.json()["target_timestamp"], "2024-01-04T00:00:00")
+        self.assertAlmostEqual(response.json()["predicted_generation_mwh"], 6.5)
+        self.assertEqual(response.json()["target_timestamp"], "2024-01-15T00:00:00")
 
     def test_invalid_sequence_gap_duplicates_or_future_order_rejected(self):
-        good = self.rows[:72]
+        good = self.rows[:14]
         cases = [
             good[:-1],
-            good[:30] + good[31:] + [self.rows[72]],
-            good[:71] + [good[70]],
+            good[:7] + good[8:] + [self.rows[14]],
+            good[:13] + [good[12]],
             list(reversed(good)),
         ]
         with TestClient(app) as client:
@@ -101,13 +106,13 @@ class Day1Tests(unittest.TestCase):
                 self.assertEqual(preview["unit"], "MWh")
                 self.assertEqual(
                     preview["example"]["sequence"][-1]["timestamp"],
-                    "2024-01-11T19:00:00",
+                    "2024-09-16T00:00:00",
                 )
 
     def test_removed_manual_features_are_not_exposed(self):
         with TestClient(app) as client:
             for path, payload in (
-                ("/predict/batch-test", {"start_timestamp": "2024-01-04T00:00:00"}),
+                ("/predict/batch-test", {"start_timestamp": "2024-01-15T00:00:00"}),
                 ("/retrain", {"cutoff_timestamp": "2024-01-10T00:00:00"}),
             ):
                 with self.subTest(path=path):
@@ -122,6 +127,6 @@ class Day1Tests(unittest.TestCase):
             side_effect=FileNotFoundError("태양광 모델을 먼저 학습하세요"),
         ):
             with TestClient(app) as client:
-                response = client.post("/predict", json={"sequence": self.rows[:72]})
+                response = client.post("/predict", json={"sequence": self.rows[:14]})
         self.assertEqual(response.status_code, 503)
         self.assertIn("학습", response.json()["detail"])

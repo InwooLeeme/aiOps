@@ -11,20 +11,20 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "project"))
+from daily_helpers import daily_rows as hourly_rows
 from fastapi.testclient import TestClient
 from serving_app import model_loader
 from serving_app.main import app
 from serving_app.monitoring.simulation import inject_curtailment
 from serving_app.routers import predict
 from test_day1 import csv_bytes
-from test_solar_data import hourly_rows
 
 
 class SimulationTests(unittest.TestCase):
     def setUp(self):
         self.stack = self.enterContext(ExitStack())
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        self.rows = hourly_rows(120 * 24, "2024-02-01T00:00:00")
+        self.rows = hourly_rows(120, "2024-02-01T00:00:00")
         for r in self.rows:
             r["generation_mwh"] = 100.0
         self.path = self.root / "solar.csv"
@@ -33,7 +33,7 @@ class SimulationTests(unittest.TestCase):
             registry_version="1",
             version="production",
             metadata={
-                "validation_end": "2023-11-30T23:00:00",
+                "validation_end": "2023-11-30T00:00:00",
                 "drift_threshold_mwh": 10.0,
             },
             predict_one=lambda w: w[-1]["generation_mwh"],
@@ -66,7 +66,10 @@ class SimulationTests(unittest.TestCase):
         self.client = self.stack.enter_context(TestClient(app))
 
     def run_batch(self, scenario):
-        response = self.client.post("/simulation/run", json={"scenario": scenario})
+        response = self.client.post(
+            "/simulation/run",
+            json={"scenario": scenario, "start_timestamp": "2024-05-01"},
+        )
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
 
@@ -76,15 +79,15 @@ class SimulationTests(unittest.TestCase):
         self.assertEqual(normal["drift_check"]["status"], "ok")
         self.assertIsNone(normal["retraining"])
         result = self.run_batch("drift")
-        self.assertEqual(result["model_name"], "JejuSolarPredictor")
+        self.assertEqual(result["model_name"], "JejuSolarDailyPredictor")
         self.assertEqual(result["retraining"]["status"], "gate_rejected")
-        self.assertEqual(len(predict.recent_predictions), 168)
+        self.assertEqual(len(predict.recent_predictions), 14)
         self.assertEqual(self.path.read_bytes(), before)
         history = self.train.call_args.args[0]
-        self.assertEqual(history[-1]["timestamp"], "2024-05-30T16:00:00")
+        self.assertEqual(history[-1]["timestamp"], "2024-05-14T00:00:00")
         by_time = {r["timestamp"]: r for r in history}
-        self.assertEqual(by_time["2024-05-24T12:00:00"]["generation_mwh"], 10)
-        self.assertEqual(by_time["2024-05-24T13:00:00"]["generation_mwh"], 100)
+        self.assertEqual(by_time["2024-05-04T00:00:00"]["generation_mwh"], 10)
+        self.assertEqual(by_time["2024-05-05T00:00:00"]["generation_mwh"], 100)
         self.assertTrue(self.train.call_args.kwargs["metadata_extra"]["simulation"])
         self.assertEqual(self.client.get("/simulation/status").json(), result)
         self.assertEqual(self.client.get("/metrics/summary").json()["request_count"], 2)
@@ -94,9 +97,7 @@ class SimulationTests(unittest.TestCase):
         again = self.run_batch("drift")
         self.assertEqual(again["drift_check"]["new_count"], 0)
         self.assertEqual(self.train.call_count, 1)
-        self.assertEqual(
-            len((self.root / "replay.jsonl").read_text().splitlines()), 168
-        )
+        self.assertEqual(len((self.root / "replay.jsonl").read_text().splitlines()), 14)
 
     def test_switching_scenarios_does_not_repeat_same_training(self):
         self.run_batch("drift")
@@ -104,7 +105,7 @@ class SimulationTests(unittest.TestCase):
         result = self.run_batch("drift")
         self.assertEqual(self.train.call_count, 1)
         self.assertEqual(result["drift_check"]["new_count"], 0)
-        self.assertEqual(len(predict.recent_predictions), 168)
+        self.assertEqual(len(predict.recent_predictions), 14)
 
     def test_gate_pass_activates_operating_model_and_clears_old_errors(self):
         self.train.return_value = {
@@ -140,9 +141,12 @@ class SimulationTests(unittest.TestCase):
 
     def test_missing_hour_rejected_before_any_monitoring_or_training(self):
         self.path.write_bytes(
-            csv_bytes([r for r in self.rows if r["timestamp"] != "2024-05-26T12:00:00"])
+            csv_bytes([r for r in self.rows if r["timestamp"] != "2024-05-06T00:00:00"])
         )
-        response = self.client.post("/simulation/run", json={"scenario": "drift"})
+        response = self.client.post(
+            "/simulation/run",
+            json={"scenario": "drift", "start_timestamp": "2024-05-01"},
+        )
         self.assertEqual(response.status_code, 422)
         self.assertEqual(predict.recent_predictions, [])
         self.train.assert_not_called()
@@ -150,20 +154,25 @@ class SimulationTests(unittest.TestCase):
     def test_selection_overlap_local_and_concurrent_requests_rejected(self):
         self.model.metadata["training_end"] = "2024-06-01T00:00:00"
         self.assertEqual(
-            self.client.post("/simulation/run", json={"scenario": "drift"}).status_code,
+            self.client.post(
+                "/simulation/run",
+                json={"scenario": "drift", "start_timestamp": "2024-05-01"},
+            ).status_code,
             422,
         )
         with patch.dict(os.environ, MODEL_SOURCE="local"):
             self.assertEqual(
                 self.client.post(
-                    "/simulation/run", json={"scenario": "normal"}
+                    "/simulation/run",
+                    json={"scenario": "normal", "start_timestamp": "2024-05-01"},
                 ).status_code,
                 422,
             )
         with predict._replay_lock:
             self.assertEqual(
                 self.client.post(
-                    "/simulation/run", json={"scenario": "normal"}
+                    "/simulation/run",
+                    json={"scenario": "normal", "start_timestamp": "2024-05-01"},
                 ).status_code,
                 409,
             )
@@ -186,6 +195,6 @@ class SimulationTests(unittest.TestCase):
         before = copy.deepcopy(self.rows)
         changed = inject_curtailment(self.rows)
         self.assertIsNone(changed[0]["generation_mwh"])
+        self.assertEqual(changed[1]["generation_mwh"], 10)
         self.assertEqual(changed[2]["generation_mwh"], 100)
-        self.assertEqual(changed[12]["generation_mwh"], 10)
         self.assertEqual(self.rows, before)

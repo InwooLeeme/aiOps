@@ -1,4 +1,4 @@
-"""제주 태양광 CSV 검증과 학습·서빙 공용 전처리. 시각은 KST 시간 구간 라벨."""
+"""제주 일별 총발전량 전처리. 날짜는 KST 00:00, 입력은 완료된 14일."""
 
 import csv
 import io
@@ -7,7 +7,7 @@ import math
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-SEQ_LEN = 72
+SEQ_LEN = 14
 COLUMN_MAP = {
     "시도명": "region",
     "일자 및 시각": "timestamp",
@@ -26,7 +26,7 @@ NUMERIC_COLUMNS = [
     "wind_speed",
     "cloud_cover",
 ]
-FEATURE_COLUMNS = NUMERIC_COLUMNS + ["hour_sin", "hour_cos", "year_sin", "year_cos"]
+FEATURE_COLUMNS = NUMERIC_COLUMNS + ["year_sin", "year_cos"]
 KST = timezone(timedelta(hours=9))
 
 
@@ -34,12 +34,12 @@ def parse_timestamp(value) -> datetime:
     t = datetime.fromisoformat(str(value))
     if t.tzinfo:
         t = t.astimezone(KST).replace(tzinfo=None)
-    if t.minute or t.second or t.microsecond:
-        raise ValueError("일자 및 시각은 정시(1시간 간격)여야 합니다")
+    if t.hour or t.minute or t.second or t.microsecond:
+        raise ValueError("일자 및 시각은 일자(KST 00:00)여야 합니다")
     return t
 
 
-def validate_rows(rows: list[dict], *, allow_missing_capacity=False) -> list[dict]:
+def validate_rows(rows: list[dict]) -> list[dict]:
     if not rows:
         raise ValueError("CSV에 데이터가 없습니다")
     result = []
@@ -60,9 +60,7 @@ def validate_rows(rows: list[dict], *, allow_missing_capacity=False) -> list[dic
                 if value is not None and not math.isfinite(value):
                     raise ValueError(f"{col}: 유한한 숫자가 아닙니다")
                 row[col] = value
-            if (row["capacity_mw"] is None and not allow_missing_capacity) or (
-                row["capacity_mw"] is not None and row["capacity_mw"] <= 0
-            ):
+            if row["capacity_mw"] is not None and row["capacity_mw"] <= 0:
                 raise ValueError("설비용량은 양수여야 합니다")
             for col in ("generation_mwh", "wind_speed", "humidity", "cloud_cover"):
                 if row[col] is not None and row[col] < 0:
@@ -77,7 +75,61 @@ def validate_rows(rows: list[dict], *, allow_missing_capacity=False) -> list[dic
     return sorted(result, key=lambda r: r["timestamp"])
 
 
-def decode_csv(raw: bytes, *, allow_missing_capacity=False) -> list[dict]:
+DAILY_COLUMN_MAP = {
+    "날짜(KST)": "timestamp",
+    "시도명": "region",
+    "일 발전량 합계(MWh)": "generation_mwh",
+    "설비용량 평균(MW)": "capacity_mw",
+    "기온 평균": "temperature",
+    "습도 평균": "humidity",
+    "풍속 평균": "wind_speed",
+    "전운량 평균(10분위)": "cloud_cover",
+}
+COUNT_COLUMNS = dict(
+    zip(
+        NUMERIC_COLUMNS,
+        [
+            "발전량 유효 시간 수",
+            "설비용량 유효 시간 수",
+            "기온 유효 시간 수",
+            "습도 유효 시간 수",
+            "풍속 유효 시간 수",
+            "전운량 유효 시간 수",
+        ],
+        strict=True,
+    )
+)
+
+
+def aggregate_hourly(rows):
+    """KST 날짜별 24개 관측만 완전한 합계/평균으로 사용한다."""
+    from collections import defaultdict
+
+    from data.features import validate_rows as validate_hourly
+
+    groups = defaultdict(list)
+    for row in validate_hourly(rows, allow_missing_capacity=True):
+        groups[row["timestamp"][:10]].append(row)
+    start, end = map(datetime.fromisoformat, (min(groups), max(groups)))
+    result = []
+    while start <= end:
+        observations = groups.get(start.date().isoformat(), [])
+        point = {"timestamp": start.isoformat(), "region": "제주"}
+        for column in NUMERIC_COLUMNS:
+            values = [r[column] for r in observations if r[column] is not None]
+            point[column] = (
+                math.fsum(values) / (1 if column == "generation_mwh" else 24)
+                if len(values) == 24
+                else None
+            )
+        result.append(point)
+        start += timedelta(days=1)
+    return result
+
+
+def decode_csv(raw: bytes) -> list[dict]:
+    from data.features import decode_csv as decode_hourly
+
     for encoding in ("utf-8-sig", "cp949"):
         try:
             text = raw.decode(encoding)
@@ -88,17 +140,30 @@ def decode_csv(raw: bytes, *, allow_missing_capacity=False) -> list[dict]:
         raise ValueError("UTF-8 또는 CP949 CSV를 사용하세요")
     reader = csv.DictReader(io.StringIO(text))
     fields = set(reader.fieldnames or [])
-    if set(COLUMN_MAP).issubset(fields):
-        rows = [
-            {target: r[source] for source, target in COLUMN_MAP.items()} for r in reader
-        ]
-    elif set(COLUMN_MAP.values()).issubset(fields):
-        rows = [{col: r[col] for col in COLUMN_MAP.values()} for r in reader]
-    else:
-        raise ValueError(
-            "제주 태양광 CSV 필수 컬럼이 없습니다: " + ", ".join(COLUMN_MAP)
-        )
-    return validate_rows(rows, allow_missing_capacity=allow_missing_capacity)
+    if set(DAILY_COLUMN_MAP).issubset(fields):
+        if not set(COUNT_COLUMNS.values()).issubset(fields):
+            raise ValueError("일별 집계 CSV에는 변수별 유효 시간 수가 필요합니다")
+        rows = []
+        for source in reader:
+            point = {
+                target: source[column] for column, target in DAILY_COLUMN_MAP.items()
+            }
+            for column, count_column in COUNT_COLUMNS.items():
+                count = float(source[count_column])
+                if not count.is_integer() or not 0 <= count <= 24:
+                    raise ValueError("유효 시간 수는 0~24 정수여야 합니다")
+                if count != 24:
+                    point[column] = None
+            rows.append(point)
+        return validate_rows(rows)
+    # Normalized daily files require an explicit granularity marker; midnight-only
+    # hourly uploads must still be aggregated as incomplete hourly observations.
+    if set(COLUMN_MAP.values()).issubset(fields) and "granularity" in fields:
+        rows = list(reader)
+        if any(row["granularity"] != "daily" for row in rows):
+            raise ValueError("granularity는 daily여야 합니다")
+        return validate_rows([{c: r[c] for c in COLUMN_MAP.values()} for r in rows])
+    return aggregate_hourly(decode_hourly(raw, allow_missing_capacity=True))
 
 
 def load_rows(csv_path: str | Path) -> list[dict]:
@@ -114,7 +179,7 @@ def complete_point(row: dict) -> bool:
 def validate_sequence(rows: list[dict], seq_len: int = SEQ_LEN) -> list[dict]:
     normalized = validate_rows(rows)
     if len(normalized) != seq_len:
-        raise ValueError(f"입력은 정확히 {seq_len}시간이어야 합니다")
+        raise ValueError(f"입력은 정확히 {seq_len}일이어야 합니다")
     if [r["timestamp"] for r in normalized] != [
         parse_timestamp(r["timestamp"]).isoformat() for r in rows
     ]:
@@ -126,8 +191,8 @@ def validate_sequence(rows: list[dict], seq_len: int = SEQ_LEN) -> list[dict]:
             )
         if i and parse_timestamp(row["timestamp"]) - parse_timestamp(
             normalized[i - 1]["timestamp"]
-        ) != timedelta(hours=1):
-            raise ValueError("입력 구간에 누락된 시간이 있습니다")
+        ) != timedelta(days=1):
+            raise ValueError("입력 구간에 누락된 날짜가 있습니다")
     return normalized
 
 
@@ -137,7 +202,7 @@ def sample_windows(rows: list[dict], seq_len: int = SEQ_LEN):
     previous = None
     for i, row in enumerate(rows):
         stamp = parse_timestamp(row["timestamp"])
-        contiguous = previous is not None and stamp - previous == timedelta(hours=1)
+        contiguous = previous is not None and stamp - previous == timedelta(days=1)
         if not contiguous:
             run = 0
         if run >= seq_len and row.get("generation_mwh") is not None:
@@ -158,10 +223,7 @@ def point_features(row: dict) -> list[float]:
         * (stamp - year_start).total_seconds()
         / (year_end - year_start).total_seconds()
     )
-    hour_phase = 2 * math.pi * stamp.hour / 24
     return [float(row[c]) for c in NUMERIC_COLUMNS] + [
-        math.sin(hour_phase),
-        math.cos(hour_phase),
         math.sin(phase),
         math.cos(phase),
     ]
@@ -175,8 +237,8 @@ class SolarScaler:
         self.minimum = [min(col) for col in zip(*points, strict=True)]
         self.maximum = [max(col) for col in zip(*points, strict=True)]
         # 시간 주기는 학습 연도의 범위에 관계없이 정의된 범위를 사용한다.
-        self.minimum[-4:] = [-1.0] * 4
-        self.maximum[-4:] = [1.0] * 4
+        self.minimum[-2:] = [-1.0] * 2
+        self.maximum[-2:] = [1.0] * 2
         return self
 
     def transform_point(self, row: dict) -> list[float]:
@@ -201,7 +263,7 @@ class SolarScaler:
         path.write_text(
             json.dumps(
                 {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "features": FEATURE_COLUMNS,
                     "seq_len": SEQ_LEN,
                     "minimum": self.minimum,
@@ -215,7 +277,7 @@ class SolarScaler:
     def load(cls, path: str | Path):
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
         if (
-            payload.get("schema_version") != 1
+            payload.get("schema_version") != 2
             or payload.get("features") != FEATURE_COLUMNS
             or payload.get("seq_len") != SEQ_LEN
         ):
@@ -247,7 +309,7 @@ def dataset_summary(rows: list[dict]) -> dict:
                 parse_timestamp(rows[-1]["timestamp"])
                 - parse_timestamp(rows[0]["timestamp"])
             ).total_seconds()
-            / 3600
+            / 86400
         )
         + 1
     )
@@ -257,7 +319,7 @@ def dataset_summary(rows: list[dict]) -> dict:
         "region": "제주",
         "start_date": rows[0]["timestamp"],
         "end_date": rows[-1]["timestamp"],
-        "missing_hours": expected - len(rows),
+        "missing_days": expected - len(rows),
         "missing_targets": len(rows) - len(values),
         "min_generation_mwh": min(values) if values else None,
         "max_generation_mwh": max(values) if values else None,
@@ -266,4 +328,7 @@ def dataset_summary(rows: list[dict]) -> dict:
             c: sum(r[c] is None for r in rows) for c in NUMERIC_COLUMNS
         },
         "unit": "MWh",
+        "granularity": "daily",
+        "complete_days": sum(complete_point(r) for r in rows),
+        "incomplete_days": sum(not complete_point(r) for r in rows),
     }

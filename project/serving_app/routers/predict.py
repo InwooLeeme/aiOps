@@ -1,4 +1,4 @@
-"""태양광 다음 시간 예측과 드리프트 시뮬레이션·자동 재학습."""
+"""태양광 다음 날짜 총발전량 예측과 드리프트 시뮬레이션·자동 재학습."""
 
 import hashlib
 import json
@@ -11,11 +11,11 @@ from collections import deque
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from data.features import decode_csv, parse_timestamp, sample_windows
+from data.daily_features import decode_csv, parse_timestamp, sample_windows
 from data.storage import latest_upload
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
-from serving_app import model_loader
+from serving_app import forecasts, model_loader
 from serving_app.config import MODEL_NAME, RUNTIME_DIR
 from serving_app.monitoring.drift_detector import WINDOW_SIZE, assess_drift
 from serving_app.monitoring.retrain_trigger import check_and_trigger
@@ -28,8 +28,8 @@ from serving_app.schemas import (
 
 router = APIRouter()
 recent_predictions: list[dict] = []
-REPLAY_LOG = RUNTIME_DIR / "solar_replay.jsonl"
-SIMULATION_LOG = RUNTIME_DIR / "solar_simulation.jsonl"
+REPLAY_LOG = RUNTIME_DIR / "solar_daily_replay.jsonl"
+SIMULATION_LOG = RUNTIME_DIR / "solar_daily_simulation.jsonl"
 _replay_lock = threading.Lock()
 _last_replay: dict = {}
 _batch_contexts: dict = {}
@@ -47,22 +47,39 @@ def model_identity(model):
 
 
 @router.post("/predict", response_model=PredictResponse)
-def predict(req: PredictRequest):
+def predict(req: PredictRequest, request: Request):
     model = current_model()
     sequence = [p.model_dump() for p in req.sequence]
+    context = forecasts.forecast_context(sequence[-1]["timestamp"])
+    if context["forecast_context"] == "future_input":
+        raise HTTPException(422, "아직 관측할 수 없는 미래 시각의 입력입니다")
     try:
         value = model.predict_one(sequence)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     if not math.isfinite(value):
         raise HTTPException(503, "모델이 유효한 발전량을 반환하지 않았습니다")
-    target = parse_timestamp(sequence[-1]["timestamp"]) + timedelta(hours=1)
+    context = forecasts.forecast_context(sequence[-1]["timestamp"])
+    record = forecasts.save_prediction(
+        forecasts.db_path(request), context, round(value, 5), model
+    )
     return PredictResponse(
-        predicted_generation_mwh=round(value, 5),
-        target_timestamp=target.isoformat(),
+        predicted_generation_mwh=record["predicted"],
+        target_timestamp=record["target_timestamp"],
         region="제주",
         model_version=model_identity(model),
+        input_end_timestamp=record["input_end_timestamp"],
+        issued_at=record["issued_at"],
+        prediction_id=record["prediction_id"],
+        forecast_context=record["forecast_context"],
+        monitoring_eligible=bool(record["monitoring_eligible"]),
+        exclusion_reason=record["exclusion_reason"],
     )
+
+
+@router.get("/predictions/recent")
+def prediction_history(request: Request):
+    return forecasts.summary(forecasts.db_path(request), model_loader._model_cache)
 
 
 def evaluate_batch(
@@ -95,7 +112,7 @@ def evaluate_batch(
     for window, target in sample_windows(rows):
         if target["timestamp"] < start_timestamp:
             continue
-        if parse_timestamp(target["timestamp"]) > observed_until:
+        if parse_timestamp(target["timestamp"]) + timedelta(days=1) > observed_until:
             raise HTTPException(
                 422, "미래 시각의 관측값은 과거 평가에 사용할 수 없습니다"
             )
@@ -112,15 +129,15 @@ def evaluate_batch(
             break
     if not records:
         raise HTTPException(
-            422, "해당 기간에 결측 없는 72시간 입력과 다음 시간 정답이 없습니다"
+            422, "해당 기간에 결측 없는 14일 입력과 다음 날짜 총발전량 정답이 없습니다"
         )
     if strict and (
-        len(records) != 168
+        len(records) != WINDOW_SIZE
         or records[0]["timestamp"] != start_timestamp
         or not assess_drift(records, model.metadata.get("drift_threshold_mwh"))["ready"]
     ):
         raise HTTPException(
-            422, "시뮬레이션에는 결측 없는 연속 168시간 평가 구간이 필요합니다"
+            422, "시뮬레이션에는 결측 없는 연속 14일 평가 구간이 필요합니다"
         )
     if same_context and records[-1]["timestamp"] < previous["cutoff"]:
         raise HTTPException(

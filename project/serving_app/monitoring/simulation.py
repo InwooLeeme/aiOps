@@ -4,21 +4,23 @@ import hashlib
 import json
 import logging
 
-from data.features import parse_timestamp
+from data.daily_features import parse_timestamp
 
 from serving_app.config import MODEL_NAME
 
-DEFAULT_START = "2024-05-23T17:00:00"
+DEFAULT_START = "2024-07-21T00:00:00"
 logger = logging.getLogger("solar_aiops")
 
 
 def inject_curtailment(rows):
-    """08~18시의 짝수 시간에 발전량을 10%로 제한한 별도 사본."""
+    """격일 발전량을 10%로 제한한 별도 사본."""
     changed = []
     for source in rows:
         row = dict(source)
-        hour = parse_timestamp(row["timestamp"]).hour
-        if row["generation_mwh"] is not None and 8 <= hour <= 18 and hour % 2 == 0:
+        if (
+            row["generation_mwh"] is not None
+            and parse_timestamp(row["timestamp"]).toordinal() % 2 == 0
+        ):
             row["generation_mwh"] *= 0.1
         changed.append(row)
     return changed
@@ -27,6 +29,7 @@ def inject_curtailment(rows):
 def run_simulation(
     rows, incumbent, scenario, start_timestamp=DEFAULT_START, *, dataset_hash=None
 ):
+    from serving_app.monitoring.drift_detector import WINDOW_SIZE
     from serving_app.routers.predict import evaluate_batch, model_identity
 
     if scenario not in {"normal", "drift"}:
@@ -40,7 +43,9 @@ def run_simulation(
     context_hash = (
         source_hash
         if scenario == "normal"
-        else hashlib.sha256((source_hash + ":curtailment-v1").encode()).hexdigest()
+        else hashlib.sha256(
+            (source_hash + ":daily-curtailment-v1").encode()
+        ).hexdigest()
     )
     base_version = model_identity(incumbent)
     metadata = {"simulation": True, "scenario": scenario, "dataset_sha256": source_hash}
@@ -48,7 +53,7 @@ def run_simulation(
         history,
         incumbent,
         start_timestamp,
-        168,
+        WINDOW_SIZE,
         context_hash,
         strict=True,
         metadata_extra=metadata,
@@ -72,7 +77,7 @@ def run_simulation(
         "scenario": scenario,
         "description": "원본 데이터"
         if scenario == "normal"
-        else "08~18시 짝수 시간 발전량을 10%로 제한한 합성 시나리오",
+        else "격일로 일별 총발전량을 10%로 제한한 합성 시나리오",
         "start_timestamp": start_timestamp,
         "cutoff_timestamp": batch.records[-1]["timestamp"],
         "base_model_version": base_version,

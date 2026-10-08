@@ -12,7 +12,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "project"))
 
 import numpy as np
-from data.features import FEATURE_COLUMNS, SEQ_LEN, SolarScaler
+from data.daily_features import FEATURE_COLUMNS, SEQ_LEN, SolarScaler
 from serving_app import model_loader
 from serving_app.lstm_model import build_model
 from serving_app.train_and_register import (
@@ -30,7 +30,7 @@ def rows(start, count, generation=2.0):
     begin = datetime.fromisoformat(start)
     return [
         {
-            "timestamp": (begin + timedelta(hours=i)).isoformat(),
+            "timestamp": (begin + timedelta(days=i)).isoformat(),
             "region": "제주",
             "generation_mwh": generation + i % 3,
             "capacity_mw": 10.0,
@@ -85,25 +85,23 @@ class Day2Tests(unittest.TestCase):
                 save_bundle(constant_model(0.75), scaler, {}, target)
                 second = model_loader._load_from_local()
             self.assertNotEqual(first.version, second.version)
-            self.assertAlmostEqual(first.predict_one(rows("2023-01-01", 72)), 2.5)
-            self.assertAlmostEqual(second.predict_one(rows("2023-01-01", 72)), 3.5)
+            self.assertAlmostEqual(first.predict_one(rows("2023-01-01", 14)), 2.5)
+            self.assertAlmostEqual(second.predict_one(rows("2023-01-01", 14)), 3.5)
 
     def test_scaler_fit_excludes_validation_and_test_and_splits_target_year(self):
-        source = rows("2022-12-27", 6 * 24) + rows(
-            "2023-12-27", 6 * 24, generation=100.0
-        )
+        source = rows("2022-12-01", 32) + rows("2023-12-01", 32, generation=100.0)
         prepared = prepare_training_data(source)
-        self.assertEqual(prepared["train"]["timestamps"][-1], "2022-12-31T23:00:00")
+        self.assertEqual(prepared["train"]["timestamps"][-1], "2022-12-31T00:00:00")
         self.assertEqual(prepared["validation"]["timestamps"][0], "2023-01-01T00:00:00")
         self.assertEqual(prepared["test"]["timestamps"][0], "2024-01-01T00:00:00")
         self.assertAlmostEqual(prepared["scaler"].inverse_target(1.0), 4.0)
-        self.assertEqual(prepared["validation"]["persistence"][0], 4.0)
-        self.assertEqual(prepared["validation"]["previous_day"][0], 2.0)
+        self.assertEqual(prepared["validation"]["persistence"][0], 2.0)
+        self.assertEqual(prepared["validation"]["weekly_mean"][0], 20 / 7)
 
     def test_gate_requires_finite_candidate_strictly_better_than_both_baselines(self):
-        self.assertTrue(passes_gate(0.9, {"persistence": 1.0, "previous_day": 1.1}))
-        self.assertFalse(passes_gate(1.0, {"persistence": 1.0, "previous_day": 1.1}))
-        self.assertFalse(passes_gate(0.9, {"persistence": 1.0, "previous_day": 0.8}))
+        self.assertTrue(passes_gate(0.9, {"persistence": 1.0, "weekly_mean": 1.1}))
+        self.assertFalse(passes_gate(1.0, {"persistence": 1.0, "weekly_mean": 1.1}))
+        self.assertFalse(passes_gate(0.9, {"persistence": 1.0, "weekly_mean": 0.8}))
         self.assertFalse(passes_gate(float("nan"), {"persistence": 1.0}))
         self.assertFalse(passes_gate(0.1, {"persistence": float("nan")}))
         self.assertFalse(passes_gate(0.9, {"persistence": 1.0}, incumbent=0.8))
@@ -114,8 +112,7 @@ class Day2Tests(unittest.TestCase):
         )
         self.assertAlmostEqual(result["mae"], 1.5)
         self.assertAlmostEqual(result["rmse"], (2.5) ** 0.5)
-        self.assertEqual(result["daytime_mae"], 1.0)
-        self.assertEqual(result["daytime_rmse"], 1.0)
+        self.assertNotIn("daytime_mae", result)
 
     def test_nonfinite_model_predictions_are_rejected_before_zero_clipping(self):
         class NonfiniteModel:
@@ -124,21 +121,21 @@ class Day2Tests(unittest.TestCase):
 
         scaler = SolarScaler().fit(rows("2022-01-01", 80))
         with self.assertRaisesRegex(ValueError, "유한"):
-            _predictions(NonfiniteModel(), {"X": np.zeros((1, 72, 10))}, scaler)
+            _predictions(NonfiniteModel(), {"X": np.zeros((1, 14, 8))}, scaler)
 
     def test_fine_tune_rejects_short_or_future_observations_before_loading_model(self):
-        with self.assertRaisesRegex(ValueError, "30일"):
-            fine_tune(rows("2024-01-01", 719))
+        with self.assertRaisesRegex(ValueError, "90일"):
+            fine_tune(rows("2024-01-01", 89))
         with self.assertRaisesRegex(ValueError, "미래"):
-            fine_tune(rows("2099-01-01", 720))
+            fine_tune(rows("2099-01-01", 90))
 
     def test_fine_tune_validation_must_follow_incumbent_model_selection(self):
-        source = rows("2023-01-01", 30 * 24)
+        source = rows("2023-01-01", 120)
         incumbent = SimpleNamespace(
             scaler=SolarScaler().fit(source),
             metadata={
-                "training_end": "2022-12-31T23:00:00",
-                "validation_end": "2023-12-31T23:00:00",
+                "training_end": "2022-12-31T00:00:00",
+                "validation_end": "2023-12-31T00:00:00",
             },
         )
         with patch.object(model_loader, "get_model", return_value=incumbent):
@@ -150,13 +147,13 @@ class Day2Tests(unittest.TestCase):
             target = Path(directory) / "solar"
             scaler = SolarScaler().fit(rows("2022-01-01", 80))
             metadata = {
-                "training_end": "2022-12-31T23:00:00",
+                "training_end": "2022-12-31T00:00:00",
                 "error_threshold_mwh": 1.0,
             }
             save_bundle(constant_model(), scaler, metadata, target)
             with patch.object(model_loader, "LOCAL_BUNDLE_DIR", target):
                 model = model_loader._load_from_local()
-                self.assertAlmostEqual(model.predict_one(rows("2023-01-01", 72)), 3.0)
+                self.assertAlmostEqual(model.predict_one(rows("2023-01-01", 14)), 3.0)
                 replacement = SolarScaler().fit(rows("2022-01-01", 80, generation=100))
                 replacement.save(target / "scaler.json")
                 with self.assertRaisesRegex(ValueError, "artifact|아티팩트"):
@@ -193,7 +190,7 @@ class Day2Tests(unittest.TestCase):
                 save_bundle(
                     constant_model(),
                     SolarScaler().fit(rows("2022-01-01", 80)),
-                    {"training_end": "2022-12-31T23:00:00", "error_threshold_mwh": 1.0},
+                    {"training_end": "2022-12-31T00:00:00", "error_threshold_mwh": 1.0},
                     bundle,
                 )
                 with mlflow.start_run(experiment_id=experiment) as run:
@@ -213,8 +210,8 @@ class Day2Tests(unittest.TestCase):
                 ):
                     loaded = model_loader._load_from_mlflow()
                 self.assertEqual(loaded.registry_version, str(version.version))
-                self.assertEqual(loaded.metadata["training_end"], "2022-12-31T23:00:00")
-                self.assertAlmostEqual(loaded.predict_one(rows("2023-01-01", 72)), 3.0)
+                self.assertEqual(loaded.metadata["training_end"], "2022-12-31T00:00:00")
+                self.assertAlmostEqual(loaded.predict_one(rows("2023-01-01", 14)), 3.0)
             finally:
                 mlflow.set_tracking_uri(old_uri)
 

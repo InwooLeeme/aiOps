@@ -4,7 +4,7 @@ import logging
 import os
 from datetime import timedelta
 
-from data.features import parse_timestamp, sample_windows
+from data.daily_features import parse_timestamp, sample_windows
 
 from serving_app.monitoring.drift_detector import assess_drift
 
@@ -58,10 +58,10 @@ def retrain_at(
             "reason": "재학습은 MODEL_SOURCE=mlflow에서 실행하세요",
         }
     stamp = parse_timestamp(cutoff)
-    start = stamp - timedelta(days=90) + timedelta(hours=1)
+    start = stamp - timedelta(days=365) + timedelta(days=1)
     history = [r for r in rows if start <= parse_timestamp(r["timestamp"]) <= stamp]
     incumbent = incumbent if incumbent is not None else model_loader.get_model()
-    logger.info("[INFO] 자동 재학습 시작: 관측 종료=%s, 최근 90일", cutoff)
+    logger.info("[INFO] 자동 재학습 시작: 관측 종료=%s, 최근 365일", cutoff)
     try:
         result = fine_tune(
             history, incumbent=incumbent, promote=False, metadata_extra=metadata_extra

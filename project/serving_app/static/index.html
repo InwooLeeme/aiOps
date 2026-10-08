@@ -12,7 +12,7 @@
   <header class="topnav">
     <a class="brand" href="#dashboard" aria-label="AIOps 대시보드">
       <span class="brand-mark"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M2 12h4l2-7 4 14 3-10 2 3h5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg></span>
-      <span class="brand-text"><strong>AIOps</strong><span>Jeju Solar Forecast · Hourly MWh</span></span>
+      <span class="brand-text"><strong>AIOps</strong><span>Jeju Solar Forecast · Daily total · MWh</span></span>
     </a>
     <nav class="tabs" role="tablist" aria-label="운영 메뉴">
       <button id="tab-dashboard" role="tab" aria-controls="dashboard" aria-selected="true" data-tab="dashboard">Dashboard</button>
@@ -25,36 +25,48 @@
   <main class="page">
     <div id="connection-error" class="notice error" role="alert" hidden></div>
     <section id="dashboard" role="tabpanel" aria-labelledby="tab-dashboard">
+      <article class="card data-context-card">
+        <div class="section-head-row"><div class="section-head"><h2>제주 태양광 모델 운영</h2><p>예측 품질을 확인하고, 성능 저하에 따른 재학습과 모델 교체를 추적합니다.</p></div><span class="pill neutral">CSV 기반 · 실시간 수집 미연결</span></div>
+        <div id="data-context" class="inline-note" role="status">데이터 기준 시각을 확인하는 중입니다.</div>
+      </article>
       <article class="card summary-card">
         <div class="section-head-row">
-          <div class="section-head"><h2>운영 지표 요약</h2><p>예측 API 요청 로그를 실제로 읽어 시간 구간별로 집계합니다. 요청이 없으면 0으로 표시됩니다.</p></div>
+          <div class="section-head"><h2>운영 지표 요약</h2><p>예측·시연 요청의 처리 상태와 현재 모델의 검증 결과입니다. API 응답 성공과 예측 정확도는 별도로 확인합니다.</p></div>
           <div class="range-buttons" aria-label="지표 조회 기간"><button class="selected" data-window="5m" aria-pressed="true">5분</button><button data-window="1h" aria-pressed="false">1시간</button><button data-window="6h" aria-pressed="false">6시간</button><button data-window="24h" aria-pressed="false">24시간</button></div>
         </div>
+        <p id="requests-empty" class="inline-note" role="status"></p>
         <div class="kpi-grid">
           <div class="kpi"><h3>요청 수 (Requests)</h3><strong id="kpi-requests">—</strong><div class="sparkline" id="spark-requests"></div><small class="window-caption">최근 5분</small></div>
           <div class="kpi"><h3>평균 응답시간 (Latency)</h3><strong id="kpi-latency">—</strong><div class="sparkline" id="spark-latency"></div><small class="window-caption">최근 5분</small></div>
           <div class="kpi"><h3>성공률 (Success Rate)</h3><strong id="kpi-success">—</strong><div class="sparkline" id="spark-success"></div><small class="window-caption">최근 5분</small></div>
-          <div class="kpi"><h3>모델 성능 (RMSE)</h3><strong id="kpi-rmse">—</strong><div class="sparkline" id="spark-rmse"></div><small>MLflow 등록 버전별 추이</small></div>
-          <div class="kpi"><h3>최근 예측 오차 (MWh)</h3><strong id="kpi-drift">미실행</strong><div class="sparkline"></div><small id="drift-caption">Simulation 탭에서 정상·드리프트 배치 실행</small></div>
+          <div class="kpi"><h3>등록 시 검증 RMSE</h3><strong id="kpi-rmse">—</strong><div class="sparkline" id="spark-rmse"></div><small><span id="rmse-caption">검증 기간 확인 중</span></small></div>
+          <div class="kpi"><h3>운영 예측 오차 (MWh)</h3><strong id="kpi-drift">대기</strong><div class="sparkline"></div><small id="drift-caption">실제 관측값 연결 후 집계</small></div>
         </div>
       </article>
       <div class="dashboard-grid">
         <div class="main-column">
           <article class="card">
-            <div class="section-head-row"><div class="section-head"><h2>예측 성능 모니터링과 재학습 파이프라인</h2><p>배치 전송으로 성능 저하가 감지되면 자동 재학습합니다. 검증을 통과한 후보는 JejuSolarPredictor의 Production으로 승격하고 실제 예측 모델을 교체합니다.</p></div><span id="pipeline-run-badge" class="pill neutral">아직 실행 안 함</span></div>
+            <div class="section-head-row"><div class="section-head"><h2>예측과 실제 발전량</h2><p>예측을 저장한 뒤 CSV를 업로드하면 대상 시각의 실제값을 연결합니다. 표에는 최근 30건을 표시합니다.</p></div><span id="forecast-pending" class="pill neutral">관측 대기 0건</span></div>
+            <p id="forecast-monitoring" class="inline-note"></p>
+            <div id="forecast-chart" class="forecast-chart"></div>
+            <details><summary>예측 기록과 실제값 비교</summary><div class="table-wrap"><table><thead><tr><th>대상 시각 (KST)</th><th>모델</th><th>예측 / 실제 (MWh)</th><th>절대 오차</th><th>집계 상태</th></tr></thead><tbody id="forecast-history"><tr><td colspan="5" class="table-empty">저장된 예측이 없습니다.</td></tr></tbody></table></div></details>
+          </article>
+          <article class="card">
+            <div class="section-head-row"><div class="section-head"><h2>예측 성능 모니터링과 재학습 파이프라인</h2><p>실제값이 연결된 연속 14일의 운영 예측을 평가합니다. 성능 저하 시 자동 재학습하고, 동일한 검증 구간에서 기준을 통과하면 모델을 교체합니다. 시연 실행은 별도로 표시합니다.</p></div><span id="pipeline-run-badge" class="pill neutral">아직 실행 안 함</span></div>
             <div class="pipeline-track" id="pipeline-track"></div>
+            <div id="gate-comparison" class="inline-note">재학습 실행 후 동일 검증 구간의 모델 비교를 표시합니다.</div>
           </article>
           <article class="card history-card">
-            <div class="section-head"><h2>재학습 이력</h2><p>MLflow Model Registry에 등록된 JejuSolarPredictor 버전과 실제 스테이지를 보여줍니다.</p></div>
+            <div class="section-head"><h2>재학습 이력</h2><p>버전별 검증 기간이 다를 수 있습니다. 승격 근거는 각 행의 동일 구간 비교로 확인하세요.</p></div>
             <div id="registry-message" class="inline-note" hidden></div>
-            <div class="table-wrap"><table><thead><tr><th>버전</th><th>등록 시각</th><th>모드</th><th>RMSE</th><th>스테이지</th></tr></thead><tbody id="model-history"><tr><td colspan="5" class="table-empty">모델 이력을 불러오는 중입니다.</td></tr></tbody></table></div>
+            <div class="table-wrap"><table><thead><tr><th>버전</th><th>등록 시각</th><th>학습 / 데이터</th><th>검증 기간 (KST)</th><th>검증 RMSE</th><th>동일 구간 기존 모델 비교</th><th>스테이지</th></tr></thead><tbody id="model-history"><tr><td colspan="7" class="table-empty">모델 이력을 불러오는 중입니다.</td></tr></tbody></table></div>
           </article>
         </div>
         <aside class="side-column">
           <article class="card model-card">
             <div class="section-head-row"><h2>현재 운영 모델</h2><span id="model-health" class="pill neutral">확인 중</span></div>
-            <div class="model-name"><span id="current-model-name">JejuSolarPredictor</span> <span id="current-version" class="pill neutral">—</span></div>
-            <dl class="model-details"><div><dt>스테이지</dt><dd id="current-stage">—</dd></div><div><dt>학습 방식</dt><dd id="current-mode">—</dd></div><div><dt>RMSE</dt><dd id="current-rmse">—</dd></div><div><dt>등록 시각</dt><dd id="current-time">—</dd></div></dl>
+            <div class="model-name"><span id="current-model-name">JejuSolarDailyPredictor</span> <span id="current-version" class="pill neutral">—</span></div>
+            <dl class="model-details"><div><dt>스테이지</dt><dd id="current-stage">—</dd></div><div><dt>학습 방식</dt><dd id="current-mode">—</dd></div><div><dt>검증 RMSE</dt><dd id="current-rmse">—</dd></div><div><dt>검증 기간</dt><dd id="current-period">—</dd></div><div><dt>등록 시각</dt><dd id="current-time">—</dd></div></dl>
             <p id="model-notice" class="inline-note" hidden></p>
             <button class="btn secondary" id="refresh-models">새로고침</button>
           </article>
@@ -64,22 +76,25 @@
     </section>
     <section id="simulation" role="tabpanel" aria-labelledby="tab-simulation" hidden>
       <article class="card">
-        <div class="section-head"><h2>Day1 — 다음 1시간 태양광 발전량 예측</h2><p>최근 <code id="sequence-length">72</code>시간의 제주 발전량·설비용량·기상 관측값으로 다음 1시간 발전량(MWh)을 예측합니다. 입력 시각은 한국 표준시(KST)이며 미래 기상 관측값은 사용하지 않습니다.</p></div>
-        <label class="sr-only" for="prediction-input">예측 요청 JSON</label><textarea id="prediction-input" spellcheck="false" aria-describedby="prediction-status"></textarea>
-        <div class="btn-row"><button class="btn secondary" id="regenerate-example">실제 데이터 구간 불러오기</button><button class="btn primary inference-action" id="run-prediction">예측 실행</button></div>
+        <div class="section-head"><h2>다음 날 총발전량 예측 · 업로드 데이터 기준</h2><p>연속 <code id="sequence-length">14</code>일의 관측값으로 입력 마지막 날짜 다음 날의 총발전량을 예측합니다. 일자별 값은 해당 날짜가 끝난 뒤 사용합니다. 운영 예측은 KST 00:00~00:59에 직전 날짜까지의 데이터로 발행하며, 그 밖의 요청은 과거 점검으로 분류합니다. 현재 시각 기준 예측이 아닐 수 있습니다. 과거 데이터 점검은 운영 성능에서 제외합니다.</p></div>
+        <div id="prediction-context" class="inline-note"></div>
+        <details><summary>고급 입력 · 14일 관측 JSON</summary><label class="sr-only" for="prediction-input">예측 요청 JSON</label><textarea id="prediction-input" spellcheck="false" aria-describedby="prediction-status"></textarea></details>
+        <div class="btn-row"><button class="btn secondary" id="regenerate-example">업로드 데이터 불러오기</button><button class="btn primary inference-action" id="run-prediction">예측 실행</button></div>
         <div id="prediction-status" class="action-status" role="status"></div><pre id="prediction-result" class="result-box" hidden></pre>
       </article>
       <article class="card">
-        <div class="section-head"><h2>Day3 — 드리프트 시뮬레이션 · 자동 재학습</h2><p>정상 배치는 원본 관측값을, 드리프트 배치는 08~18시 짝수 시간의 발전량을 10%로 제한한 합성 데이터를 사용합니다. 감지 → 자동 재학습 → 검증 → 승격을 한 번에 실행합니다.</p><p>원본 CSV는 보존합니다. 검증을 통과하면 <code>JejuSolarPredictor</code> 운영 모델이 교체됩니다. 통과하지 못하면 기존 모델을 유지합니다. 승격 후에는 새 모델의 학습·검증 종료 이후 구간을 선택하세요.</p></div>
-        <div class="simulation-controls"><label>시뮬레이션 시작 시각 (KST)<input id="simulation-start" type="datetime-local" step="3600" value="2024-05-23T17:00" /></label></div>
+        <div class="section-head"><h2>시연 제어 · 성능 저하와 자동 재학습</h2><p>정상 배치는 원본 관측값을, 드리프트 배치는 격일로 일별 총발전량을 10%로 제한한 합성 데이터를 사용합니다. 감지 → 자동 재학습 → 검증 → 승격을 한 번에 실행합니다.</p><p>원본 CSV는 보존합니다. 검증을 통과하면 <code>JejuSolarDailyPredictor</code> 운영 모델이 교체됩니다. 통과하지 못하면 기존 모델을 유지합니다. 승격 후에는 새 모델의 학습·검증 종료 이후 구간을 선택하세요.</p></div>
+        <div class="simulation-controls"><label>시연 데이터 시작 날짜 (KST)<input id="simulation-start" type="date" value="2024-07-21" /></label></div>
         <div class="btn-row"><button class="btn primary inference-action" id="send-normal">정상 배치 전송</button><button class="btn danger inference-action" id="send-drift">드리프트 배치 전송</button></div>
         <div id="simulation-status" class="action-status" role="status">정상 배치로 비교한 다음 드리프트 배치를 전송하세요.</div>
         <div id="simulation-summary" class="stat-grid three"></div>
         <details><summary>시뮬레이션 상세 결과</summary><pre id="simulation-result" class="result-box" hidden></pre></details>
       </article>
       <article class="card">
-        <div class="section-head-row"><div class="section-head"><h2>지표 API 상태</h2><p>예측 요청의 평균 응답시간·오류 비율·요청 수를 실제 집계합니다. 오류 비율은 0~1 범위입니다.</p></div><label class="auto-refresh"><input type="checkbox" id="auto-refresh" checked /> 5초마다 자동 새로고침</label></div>
-        <div class="stat-grid three"><div class="stat"><span>AVG_LATENCY_MS</span><strong id="metric-latency">—</strong></div><div class="stat"><span>ERROR_RATE</span><strong id="metric-errors">—</strong></div><div class="stat"><span>REQUEST_COUNT</span><strong id="metric-requests">—</strong></div></div>
+        <div class="section-head-row"><div class="section-head"><h2>API 요청 상태</h2><p><span class="window-caption">최근 5분</span> · 예측·시연 요청만 집계합니다. 화면 새로고침은 제외합니다.</p></div><label class="auto-refresh"><input type="checkbox" id="auto-refresh" checked /> 5초마다 자동 새로고침</label></div>
+        <p id="metrics-empty" class="inline-note" role="status"></p>
+        <div class="range-buttons metric-ranges" aria-label="API 지표 조회 기간"><button class="selected" data-window="5m" aria-pressed="true">5분</button><button data-window="1h" aria-pressed="false">1시간</button><button data-window="6h" aria-pressed="false">6시간</button><button data-window="24h" aria-pressed="false">24시간</button></div>
+        <div class="stat-grid three"><div class="stat"><span>평균 응답시간 (ms)</span><strong id="metric-latency">—</strong></div><div class="stat"><span>오류율</span><strong id="metric-errors">—</strong></div><div class="stat"><span>요청 수</span><strong id="metric-requests">—</strong></div></div>
         <div class="btn-row"><button class="btn secondary" id="refresh-metrics">새로고침</button></div>
       </article>
     </section>
@@ -89,15 +104,15 @@
         <div class="stat-grid six" id="dataset-stats"></div><div class="btn-row"><button class="btn secondary" id="refresh-datasets">새로고침</button></div>
       </article>
       <article class="card">
-        <div class="section-head"><h2>데이터 업로드</h2><p>공공데이터 원본 한글 컬럼(CP949) 또는 정규화한 UTF-8 CSV를 업로드합니다. 발전량은 MWh, 설비용량은 MW입니다. 1건 예측에는 연속 <span id="minimum-rows">72</span>시간의 관측값이 필요합니다.</p></div>
+        <div class="section-head"><h2>데이터 업로드</h2><p>일별 집계 CSV 또는 시간별 원본 CSV(자동 일별 집계)를 업로드합니다. 발전량은 MWh, 설비용량은 MW입니다. 업로드 시 저장된 예측에 실제 발전량을 연결합니다. 운영 평가에는 예측 발행 후 도착한 관측값을 사용합니다. 1건 예측에는 연속 <span id="minimum-rows">14</span>일의 관측값이 필요합니다.</p></div>
         <div class="upload-row"><label class="sr-only" for="upload-input">CSV 파일 선택</label><input type="file" id="upload-input" accept=".csv,text/csv" /><button class="btn primary" id="upload-file">업로드</button></div><div id="upload-status" class="action-status" role="status"></div>
       </article>
-      <article class="card"><div class="section-head"><h2>참조 데이터</h2><p>한국동서발전이 제공한 제주 시간별 태양광 발전량 및 기상 데이터를 사용합니다. 제주 지역의 시간별 발전량 합계를 예측하며, 야간 발전량 0은 실제 관측값으로 유지합니다. 누락된 시간은 임의로 채우지 않습니다.</p></div></article>
+      <article class="card"><div class="section-head"><h2>참조 데이터</h2><p>한국동서발전이 제공한 제주 시간별 태양광 발전량 및 기상 데이터를 사용합니다. 시간별 발전량은 날짜별로 합산하고 기상·설비용량은 평균을 사용합니다. 24시간이 모두 유효한 변수만 사용하며, 결측일을 가로지르는 입력은 제외합니다.</p></div></article>
     </section>
     <section id="system" role="tabpanel" aria-labelledby="tab-system" hidden>
       <article class="card"><div class="section-head"><h2>시스템 설정</h2><p>서버가 실제로 사용 중인 환경변수와 학습·성능 모니터링 설정입니다. 이 화면은 조회용입니다.</p></div><div class="stat-grid system-grid" id="system-stats"></div><div class="btn-row"><button class="btn secondary" id="refresh-system">새로고침</button></div></article>
     </section>
-    <footer>제주 태양광 AIOps 실습 · Day1~3 운영 대시보드</footer>
+    <footer>제주 태양광 AIOps · 모델 운영 대시보드 · 시각은 KST</footer>
   </main>
 </body>
 </html>

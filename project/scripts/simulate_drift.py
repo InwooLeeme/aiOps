@@ -21,7 +21,7 @@ def main(argv=None):
         "--scenario", choices=["normal", "drift", "both"], default="both"
     )
     parser.add_argument(
-        "--start", default="2024-05-23T17:00:00", help="평가 시작 시각(KST)"
+        "--start", default="2024-07-21T00:00:00", help="평가 시작 날짜(KST)"
     )
     parser.add_argument("--timeout", type=float, default=180)
     args = parser.parse_args(argv)

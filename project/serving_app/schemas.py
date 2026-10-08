@@ -2,11 +2,11 @@
 
 from typing import Literal
 
-from data.features import SEQ_LEN, parse_timestamp, validate_sequence
+from data.daily_features import SEQ_LEN, parse_timestamp, validate_sequence
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
-class HourlyPoint(BaseModel):
+class DailyPoint(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     timestamp: str
     region: Literal["제주"] = "제주"
@@ -19,16 +19,16 @@ class HourlyPoint(BaseModel):
 
     @field_validator("timestamp")
     @classmethod
-    def timestamp_is_hourly(cls, value):
+    def timestamp_is_daily(cls, value):
         return parse_timestamp(value).isoformat()
 
 
 class PredictRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    sequence: list[HourlyPoint] = Field(min_length=SEQ_LEN, max_length=SEQ_LEN)
+    sequence: list[DailyPoint] = Field(min_length=SEQ_LEN, max_length=SEQ_LEN)
 
     @model_validator(mode="after")
-    def continuous_hours(self):
+    def continuous_days(self):
         validate_sequence([r.model_dump() for r in self.sequence])
         return self
 
@@ -38,6 +38,12 @@ class PredictResponse(BaseModel):
     target_timestamp: str
     region: str
     model_version: str
+    prediction_id: str
+    input_end_timestamp: str
+    issued_at: str
+    forecast_context: str
+    monitoring_eligible: bool
+    exclusion_reason: str | None
 
 
 class BatchTestResponse(BaseModel):
@@ -50,9 +56,9 @@ class BatchTestResponse(BaseModel):
 class SimulationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     scenario: Literal["normal", "drift"]
-    start_timestamp: str = "2024-05-23T17:00:00"
+    start_timestamp: str = "2024-07-21T00:00:00"
 
     @field_validator("start_timestamp")
     @classmethod
-    def timestamp_is_hourly(cls, value):
+    def timestamp_is_daily(cls, value):
         return parse_timestamp(value).isoformat()

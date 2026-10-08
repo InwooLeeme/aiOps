@@ -761,3 +761,20 @@ footer {
 .action-status .pill {
   white-space:normal
 }
+
+.data-context-card .section-head { margin-bottom:8px; }
+.data-context-card .inline-note { margin:0; }
+.forecast-chart svg { display:block; width:100%; max-height:200px; }
+.forecast-chart svg text { font-size:11px; fill:var(--muted); }
+.chart-legend { display:flex; justify-content:center; gap:20px; margin:0 0 12px; font-size:12px; }
+.chart-legend span:first-child { color:var(--accent); }
+.chart-legend span:last-child { color:var(--ok); }
+.metric-ranges { margin-bottom:12px; }
+.period-cell { min-width:170px; white-space:normal; }
+#gate-comparison { line-height:1.7; }
+#current-period { max-width:190px; font-size:12px; }
+#prediction-context { margin-bottom:12px; }
+#forecast-history td { font-size:12px; }
+.history-card th,.history-card td { white-space:normal; }
+.history-card td:nth-child(6) { min-width:150px; line-height:1.6; }
+.history-card td:last-child { min-width:92px; }

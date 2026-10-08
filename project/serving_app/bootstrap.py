@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 from data import storage
-from data.features import load_rows, sample_windows
+from data.daily_features import load_rows, sample_windows
 from mlflow.exceptions import MlflowException
 from mlflow.tracking import MlflowClient
 
@@ -26,7 +26,7 @@ def prepare_service():
             model_loader.read_bundle(model_loader.LOCAL_BUNDLE_DIR)
             return {"status": "existing", "source": "local"}
         # Docker의 읽기 전용 모델 마운트에 쓰지 않는다.
-        directory = RUNTIME_DIR / "bootstrap-solar"
+        directory = RUNTIME_DIR / "bootstrap-solar-daily"
         if not directory.exists() or not any(directory.iterdir()):
             train_local(storage.latest_upload(), directory=directory)
         model_loader.read_bundle(directory)

@@ -1,724 +1,144 @@
 {
   "sequence": [
     {
+      "timestamp": "2024-12-18T00:00:00",
       "region": "제주",
+      "generation_mwh": 580.57742,
+      "capacity_mw": 450.0,
+      "temperature": 6.729166666666667,
+      "humidity": 58.75,
+      "wind_speed": 6.433333333333334,
+      "cloud_cover": 9.083333333333334
+    },
+    {
+      "timestamp": "2024-12-19T00:00:00",
+      "region": "제주",
+      "generation_mwh": 1341.3783,
+      "capacity_mw": 450.0,
+      "temperature": 5.675,
+      "humidity": 49.5,
+      "wind_speed": 4.2124999999999995,
+      "cloud_cover": 5.541666666666667
+    },
+    {
+      "timestamp": "2024-12-20T00:00:00",
+      "region": "제주",
+      "generation_mwh": 390.99266,
+      "capacity_mw": 450.0,
+      "temperature": 6.791666666666667,
+      "humidity": 65.75,
+      "wind_speed": 2.1625,
+      "cloud_cover": 8.375
+    },
+    {
+      "timestamp": "2024-12-21T00:00:00",
+      "region": "제주",
+      "generation_mwh": 256.92212,
+      "capacity_mw": 450.0,
+      "temperature": 7.558333333333334,
+      "humidity": 57.666666666666664,
+      "wind_speed": 7.279166666666666,
+      "cloud_cover": 8.708333333333334
+    },
+    {
+      "timestamp": "2024-12-22T00:00:00",
+      "region": "제주",
+      "generation_mwh": 628.6399,
+      "capacity_mw": 450.0,
+      "temperature": 5.479166666666667,
+      "humidity": 53.958333333333336,
+      "wind_speed": 5.154166666666667,
+      "cloud_cover": 8.5
+    },
+    {
+      "timestamp": "2024-12-23T00:00:00",
+      "region": "제주",
+      "generation_mwh": 850.7353,
+      "capacity_mw": 450.0,
+      "temperature": 7.345833333333334,
+      "humidity": 53.791666666666664,
+      "wind_speed": 3.7125,
+      "cloud_cover": 7.333333333333333
+    },
+    {
+      "timestamp": "2024-12-24T00:00:00",
+      "region": "제주",
+      "generation_mwh": 1143.36808,
+      "capacity_mw": 450.0,
+      "temperature": 8.529166666666667,
+      "humidity": 51.583333333333336,
+      "wind_speed": 3.5541666666666667,
+      "cloud_cover": 6.166666666666667
+    },
+    {
+      "timestamp": "2024-12-25T00:00:00",
+      "region": "제주",
+      "generation_mwh": 794.87644,
+      "capacity_mw": 450.0,
+      "temperature": 8.666666666666666,
+      "humidity": 62.25,
+      "wind_speed": 2.316666666666667,
+      "cloud_cover": 7.666666666666667
+    },
+    {
+      "timestamp": "2024-12-26T00:00:00",
+      "region": "제주",
+      "generation_mwh": 1075.08678,
+      "capacity_mw": 450.0,
+      "temperature": 8.991666666666667,
+      "humidity": 54.291666666666664,
+      "wind_speed": 5.3125,
+      "cloud_cover": 7.375
+    },
+    {
+      "timestamp": "2024-12-27T00:00:00",
+      "region": "제주",
+      "generation_mwh": 825.3110899999999,
+      "capacity_mw": 450.0,
+      "temperature": 6.845833333333334,
+      "humidity": 52.0,
+      "wind_speed": 5.604166666666667,
+      "cloud_cover": 8.75
+    },
+    {
+      "timestamp": "2024-12-28T00:00:00",
+      "region": "제주",
+      "generation_mwh": 537.38192,
+      "capacity_mw": 450.0,
+      "temperature": 5.591666666666666,
+      "humidity": 53.583333333333336,
+      "wind_speed": 7.325,
+      "cloud_cover": 8.291666666666666
+    },
+    {
       "timestamp": "2024-12-29T00:00:00",
-      "generation_mwh": 0.00045,
+      "region": "제주",
+      "generation_mwh": 1003.84134,
       "capacity_mw": 450.0,
-      "temperature": 6.5,
-      "humidity": 51.0,
-      "wind_speed": 5.2,
-      "cloud_cover": 9.0
+      "temperature": 8.0,
+      "humidity": 45.333333333333336,
+      "wind_speed": 3.5541666666666667,
+      "cloud_cover": 8.041666666666666
     },
     {
-      "region": "제주",
-      "timestamp": "2024-12-29T01:00:00",
-      "generation_mwh": 0.00041,
-      "capacity_mw": 450.0,
-      "temperature": 6.5,
-      "humidity": 52.0,
-      "wind_speed": 5.0,
-      "cloud_cover": 9.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-29T02:00:00",
-      "generation_mwh": 0.00038,
-      "capacity_mw": 450.0,
-      "temperature": 6.5,
-      "humidity": 48.0,
-      "wind_speed": 5.3,
-      "cloud_cover": 9.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-29T03:00:00",
-      "generation_mwh": 0.0004,
-      "capacity_mw": 450.0,
-      "temperature": 6.6,
-      "humidity": 50.0,
-      "wind_speed": 4.9,
-      "cloud_cover": 9.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-29T04:00:00",
-      "generation_mwh": 0.00037,
-      "capacity_mw": 450.0,
-      "temperature": 6.6,
-      "humidity": 47.0,
-      "wind_speed": 4.7,
-      "cloud_cover": 8.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-29T05:00:00",
-      "generation_mwh": 0.00036,
-      "capacity_mw": 450.0,
-      "temperature": 6.5,
-      "humidity": 48.0,
-      "wind_speed": 3.4,
-      "cloud_cover": 9.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-29T06:00:00",
-      "generation_mwh": 0.00034,
-      "capacity_mw": 450.0,
-      "temperature": 6.5,
-      "humidity": 48.0,
-      "wind_speed": 4.4,
-      "cloud_cover": 9.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-29T07:00:00",
-      "generation_mwh": 0.29614,
-      "capacity_mw": 450.0,
-      "temperature": 6.7,
-      "humidity": 44.0,
-      "wind_speed": 3.5,
-      "cloud_cover": 9.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-29T08:00:00",
-      "generation_mwh": 7.66188,
-      "capacity_mw": 450.0,
-      "temperature": 6.9,
-      "humidity": 48.0,
-      "wind_speed": 3.0,
-      "cloud_cover": 9.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-29T09:00:00",
-      "generation_mwh": 33.55065,
-      "capacity_mw": 450.0,
-      "temperature": 7.5,
-      "humidity": 43.0,
-      "wind_speed": 3.9,
-      "cloud_cover": 9.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-29T10:00:00",
-      "generation_mwh": 88.40208,
-      "capacity_mw": 450.0,
-      "temperature": 7.7,
-      "humidity": 41.0,
-      "wind_speed": 3.5,
-      "cloud_cover": 9.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-29T11:00:00",
-      "generation_mwh": 145.25496,
-      "capacity_mw": 450.0,
-      "temperature": 8.5,
-      "humidity": 38.0,
-      "wind_speed": 3.7,
-      "cloud_cover": 9.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-29T12:00:00",
-      "generation_mwh": 183.96496,
-      "capacity_mw": 450.0,
-      "temperature": 9.1,
-      "humidity": 42.0,
-      "wind_speed": 3.5,
-      "cloud_cover": 8.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-29T13:00:00",
-      "generation_mwh": 227.18184,
-      "capacity_mw": 450.0,
-      "temperature": 9.0,
-      "humidity": 38.0,
-      "wind_speed": 3.7,
-      "cloud_cover": 8.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-29T14:00:00",
-      "generation_mwh": 188.82604,
-      "capacity_mw": 450.0,
-      "temperature": 10.8,
-      "humidity": 33.0,
-      "wind_speed": 3.5,
-      "cloud_cover": 2.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-29T15:00:00",
-      "generation_mwh": 91.72304,
-      "capacity_mw": 450.0,
-      "temperature": 11.5,
-      "humidity": 34.0,
-      "wind_speed": 3.3,
-      "cloud_cover": 1.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-29T16:00:00",
-      "generation_mwh": 26.43167,
-      "capacity_mw": 450.0,
-      "temperature": 9.8,
-      "humidity": 40.0,
-      "wind_speed": 2.9,
-      "cloud_cover": 8.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-29T17:00:00",
-      "generation_mwh": 3.23283,
-      "capacity_mw": 450.0,
-      "temperature": 9.1,
-      "humidity": 41.0,
-      "wind_speed": 3.1,
-      "cloud_cover": 9.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-29T18:00:00",
-      "generation_mwh": 2.00364,
-      "capacity_mw": 450.0,
-      "temperature": 8.6,
-      "humidity": 44.0,
-      "wind_speed": 2.5,
-      "cloud_cover": 8.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-29T19:00:00",
-      "generation_mwh": 2.88748,
-      "capacity_mw": 450.0,
-      "temperature": 8.2,
-      "humidity": 46.0,
-      "wind_speed": 2.5,
-      "cloud_cover": 10.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-29T20:00:00",
-      "generation_mwh": 1.87266,
-      "capacity_mw": 450.0,
-      "temperature": 8.4,
-      "humidity": 48.0,
-      "wind_speed": 2.0,
-      "cloud_cover": 10.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-29T21:00:00",
-      "generation_mwh": 0.52965,
-      "capacity_mw": 450.0,
-      "temperature": 8.5,
-      "humidity": 52.0,
-      "wind_speed": 2.3,
-      "cloud_cover": 7.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-29T22:00:00",
-      "generation_mwh": 0.01876,
-      "capacity_mw": 450.0,
-      "temperature": 8.3,
-      "humidity": 55.0,
-      "wind_speed": 2.6,
-      "cloud_cover": 8.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-29T23:00:00",
-      "generation_mwh": 0.00035,
-      "capacity_mw": 450.0,
-      "temperature": 7.7,
-      "humidity": 57.0,
-      "wind_speed": 2.9,
-      "cloud_cover": 7.0
-    },
-    {
-      "region": "제주",
       "timestamp": "2024-12-30T00:00:00",
-      "generation_mwh": 0.00035,
+      "region": "제주",
+      "generation_mwh": 1231.67284,
       "capacity_mw": 450.0,
-      "temperature": 6.9,
-      "humidity": 58.0,
-      "wind_speed": 0.9,
-      "cloud_cover": 7.0
+      "temperature": 9.775,
+      "humidity": 53.166666666666664,
+      "wind_speed": 3.6666666666666665,
+      "cloud_cover": 5.916666666666667
     },
     {
-      "region": "제주",
-      "timestamp": "2024-12-30T01:00:00",
-      "generation_mwh": 0.00036,
-      "capacity_mw": 450.0,
-      "temperature": 6.2,
-      "humidity": 57.0,
-      "wind_speed": 2.8,
-      "cloud_cover": 7.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-30T02:00:00",
-      "generation_mwh": 0.00038,
-      "capacity_mw": 450.0,
-      "temperature": 6.5,
-      "humidity": 58.0,
-      "wind_speed": 2.1,
-      "cloud_cover": 8.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-30T03:00:00",
-      "generation_mwh": 0.00039,
-      "capacity_mw": 450.0,
-      "temperature": 6.5,
-      "humidity": 58.0,
-      "wind_speed": 2.9,
-      "cloud_cover": 8.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-30T04:00:00",
-      "generation_mwh": 0.00037,
-      "capacity_mw": 450.0,
-      "temperature": 6.7,
-      "humidity": 63.0,
-      "wind_speed": 2.9,
-      "cloud_cover": 8.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-30T05:00:00",
-      "generation_mwh": 0.00034,
-      "capacity_mw": 450.0,
-      "temperature": 8.2,
-      "humidity": 61.0,
-      "wind_speed": 3.5,
-      "cloud_cover": 9.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-30T06:00:00",
-      "generation_mwh": 0.00034,
-      "capacity_mw": 450.0,
-      "temperature": 8.4,
-      "humidity": 62.0,
-      "wind_speed": 3.2,
-      "cloud_cover": 8.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-30T07:00:00",
-      "generation_mwh": 0.46107,
-      "capacity_mw": 450.0,
-      "temperature": 7.2,
-      "humidity": 60.0,
-      "wind_speed": 2.8,
-      "cloud_cover": 7.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-30T08:00:00",
-      "generation_mwh": 25.16153,
-      "capacity_mw": 450.0,
-      "temperature": 6.4,
-      "humidity": 58.0,
-      "wind_speed": 2.3,
-      "cloud_cover": 8.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-30T09:00:00",
-      "generation_mwh": 88.63631,
-      "capacity_mw": 450.0,
-      "temperature": 6.7,
-      "humidity": 56.0,
-      "wind_speed": 3.2,
-      "cloud_cover": 9.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-30T10:00:00",
-      "generation_mwh": 162.56079,
-      "capacity_mw": 450.0,
-      "temperature": 10.3,
-      "humidity": 53.0,
-      "wind_speed": 4.8,
-      "cloud_cover": 8.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-30T11:00:00",
-      "generation_mwh": 170.82102,
-      "capacity_mw": 450.0,
-      "temperature": 11.1,
-      "humidity": 49.0,
-      "wind_speed": 4.1,
-      "cloud_cover": 7.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-30T12:00:00",
-      "generation_mwh": 182.11384,
-      "capacity_mw": 450.0,
-      "temperature": 12.2,
-      "humidity": 42.0,
-      "wind_speed": 6.3,
-      "cloud_cover": 8.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-30T13:00:00",
-      "generation_mwh": 235.94952,
-      "capacity_mw": 450.0,
-      "temperature": 12.8,
-      "humidity": 40.0,
-      "wind_speed": 5.3,
-      "cloud_cover": 7.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-30T14:00:00",
-      "generation_mwh": 192.43936,
-      "capacity_mw": 450.0,
-      "temperature": 13.8,
-      "humidity": 43.0,
-      "wind_speed": 4.2,
-      "cloud_cover": 9.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-30T15:00:00",
-      "generation_mwh": 117.24748,
-      "capacity_mw": 450.0,
-      "temperature": 14.1,
-      "humidity": 40.0,
-      "wind_speed": 5.8,
-      "cloud_cover": 3.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-30T16:00:00",
-      "generation_mwh": 43.52203,
-      "capacity_mw": 450.0,
-      "temperature": 13.6,
-      "humidity": 40.0,
-      "wind_speed": 6.5,
-      "cloud_cover": 1.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-30T17:00:00",
-      "generation_mwh": 4.48531,
-      "capacity_mw": 450.0,
-      "temperature": 12.3,
-      "humidity": 48.0,
-      "wind_speed": 3.2,
-      "cloud_cover": 5.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-30T18:00:00",
-      "generation_mwh": 1.98986,
-      "capacity_mw": 450.0,
-      "temperature": 11.2,
-      "humidity": 54.0,
-      "wind_speed": 3.0,
-      "cloud_cover": 2.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-30T19:00:00",
-      "generation_mwh": 3.19336,
-      "capacity_mw": 450.0,
-      "temperature": 10.6,
-      "humidity": 54.0,
-      "wind_speed": 3.2,
-      "cloud_cover": 0.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-30T20:00:00",
-      "generation_mwh": 2.20929,
-      "capacity_mw": 450.0,
-      "temperature": 11.0,
-      "humidity": 56.0,
-      "wind_speed": 3.0,
-      "cloud_cover": 10.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-30T21:00:00",
-      "generation_mwh": 0.83282,
-      "capacity_mw": 450.0,
-      "temperature": 11.0,
-      "humidity": 55.0,
-      "wind_speed": 3.4,
-      "cloud_cover": 3.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-30T22:00:00",
-      "generation_mwh": 0.04624,
-      "capacity_mw": 450.0,
-      "temperature": 10.6,
-      "humidity": 56.0,
-      "wind_speed": 4.1,
-      "cloud_cover": 0.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-30T23:00:00",
-      "generation_mwh": 0.00048,
-      "capacity_mw": 450.0,
-      "temperature": 10.3,
-      "humidity": 55.0,
-      "wind_speed": 4.5,
-      "cloud_cover": 0.0
-    },
-    {
-      "region": "제주",
       "timestamp": "2024-12-31T00:00:00",
-      "generation_mwh": 0.00037,
-      "capacity_mw": 450.0,
-      "temperature": 10.8,
-      "humidity": 50.0,
-      "wind_speed": 4.3,
-      "cloud_cover": 6.0
-    },
-    {
       "region": "제주",
-      "timestamp": "2024-12-31T01:00:00",
-      "generation_mwh": 0.00042,
+      "generation_mwh": 1417.22598,
       "capacity_mw": 450.0,
-      "temperature": 10.6,
-      "humidity": 56.0,
-      "wind_speed": 6.2,
-      "cloud_cover": 3.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-31T02:00:00",
-      "generation_mwh": 0.00035,
-      "capacity_mw": 450.0,
-      "temperature": 10.2,
-      "humidity": 52.0,
-      "wind_speed": 5.4,
-      "cloud_cover": 0.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-31T03:00:00",
-      "generation_mwh": 0.00033,
-      "capacity_mw": 450.0,
-      "temperature": 10.2,
-      "humidity": 52.0,
-      "wind_speed": 5.6,
-      "cloud_cover": 8.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-31T04:00:00",
-      "generation_mwh": 0.00034,
-      "capacity_mw": 450.0,
-      "temperature": 10.3,
-      "humidity": 53.0,
-      "wind_speed": 4.9,
-      "cloud_cover": 9.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-31T05:00:00",
-      "generation_mwh": 0.00034,
-      "capacity_mw": 450.0,
-      "temperature": 9.9,
-      "humidity": 53.0,
-      "wind_speed": 6.1,
-      "cloud_cover": 8.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-31T06:00:00",
-      "generation_mwh": 0.00033,
-      "capacity_mw": 450.0,
-      "temperature": 9.4,
-      "humidity": 56.0,
-      "wind_speed": 5.3,
-      "cloud_cover": 6.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-31T07:00:00",
-      "generation_mwh": 0.48349,
-      "capacity_mw": 450.0,
-      "temperature": 8.8,
-      "humidity": 48.0,
-      "wind_speed": 5.4,
-      "cloud_cover": 7.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-31T08:00:00",
-      "generation_mwh": 28.33915,
-      "capacity_mw": 450.0,
-      "temperature": 8.7,
-      "humidity": 54.0,
-      "wind_speed": 5.4,
-      "cloud_cover": 7.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-31T09:00:00",
-      "generation_mwh": 109.06403,
-      "capacity_mw": 450.0,
-      "temperature": 8.4,
-      "humidity": 48.0,
-      "wind_speed": 5.8,
+      "temperature": 8.554166666666667,
+      "humidity": 50.583333333333336,
+      "wind_speed": 4.554166666666666,
       "cloud_cover": 4.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-31T10:00:00",
-      "generation_mwh": 179.06338,
-      "capacity_mw": 450.0,
-      "temperature": 9.0,
-      "humidity": 48.0,
-      "wind_speed": 4.7,
-      "cloud_cover": 3.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-31T11:00:00",
-      "generation_mwh": 237.98803,
-      "capacity_mw": 450.0,
-      "temperature": 9.3,
-      "humidity": 40.0,
-      "wind_speed": 5.1,
-      "cloud_cover": 2.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-31T12:00:00",
-      "generation_mwh": 229.49226,
-      "capacity_mw": 450.0,
-      "temperature": 9.9,
-      "humidity": 43.0,
-      "wind_speed": 4.8,
-      "cloud_cover": 2.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-31T13:00:00",
-      "generation_mwh": 220.84951,
-      "capacity_mw": 450.0,
-      "temperature": 9.6,
-      "humidity": 42.0,
-      "wind_speed": 4.7,
-      "cloud_cover": 3.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-31T14:00:00",
-      "generation_mwh": 212.07865,
-      "capacity_mw": 450.0,
-      "temperature": 9.5,
-      "humidity": 40.0,
-      "wind_speed": 5.5,
-      "cloud_cover": 1.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-31T15:00:00",
-      "generation_mwh": 134.75233,
-      "capacity_mw": 450.0,
-      "temperature": 9.1,
-      "humidity": 43.0,
-      "wind_speed": 5.0,
-      "cloud_cover": 4.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-31T16:00:00",
-      "generation_mwh": 49.2562,
-      "capacity_mw": 450.0,
-      "temperature": 8.1,
-      "humidity": 50.0,
-      "wind_speed": 5.1,
-      "cloud_cover": 2.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-31T17:00:00",
-      "generation_mwh": 4.79473,
-      "capacity_mw": 450.0,
-      "temperature": 7.1,
-      "humidity": 50.0,
-      "wind_speed": 4.1,
-      "cloud_cover": 3.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-31T18:00:00",
-      "generation_mwh": 2.04272,
-      "capacity_mw": 450.0,
-      "temperature": 6.7,
-      "humidity": 52.0,
-      "wind_speed": 3.5,
-      "cloud_cover": 5.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-31T19:00:00",
-      "generation_mwh": 3.31194,
-      "capacity_mw": 450.0,
-      "temperature": 6.3,
-      "humidity": 56.0,
-      "wind_speed": 2.9,
-      "cloud_cover": 5.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-31T20:00:00",
-      "generation_mwh": 3.11,
-      "capacity_mw": 450.0,
-      "temperature": 6.1,
-      "humidity": 55.0,
-      "wind_speed": 2.6,
-      "cloud_cover": 0.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-31T21:00:00",
-      "generation_mwh": 2.21422,
-      "capacity_mw": 450.0,
-      "temperature": 5.8,
-      "humidity": 58.0,
-      "wind_speed": 2.3,
-      "cloud_cover": 2.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-31T22:00:00",
-      "generation_mwh": 0.36742,
-      "capacity_mw": 450.0,
-      "temperature": 5.6,
-      "humidity": 58.0,
-      "wind_speed": 2.5,
-      "cloud_cover": 1.0
-    },
-    {
-      "region": "제주",
-      "timestamp": "2024-12-31T23:00:00",
-      "generation_mwh": 0.01544,
-      "capacity_mw": 450.0,
-      "temperature": 5.9,
-      "humidity": 57.0,
-      "wind_speed": 2.1,
-      "cloud_cover": 5.0
     }
   ]
 }

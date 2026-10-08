@@ -7,11 +7,11 @@ import os
 from pathlib import Path
 from threading import RLock
 
-from data.features import FEATURE_COLUMNS, SEQ_LEN, SolarScaler
+from data.daily_features import FEATURE_COLUMNS, SEQ_LEN, SolarScaler
 
 from serving_app.config import MODEL_DIR, MODEL_NAME
 
-LOCAL_BUNDLE_DIR = MODEL_DIR / "solar"
+LOCAL_BUNDLE_DIR = MODEL_DIR / "solar-daily"
 _model_cache = None
 _cache_lock = RLock()
 
@@ -36,6 +36,11 @@ def read_bundle(directory: Path):
         or metadata.get("seq_len") != SEQ_LEN
     ):
         raise ValueError("모델의 feature_columns/seq_len이 현재 태양광 입력과 다릅니다")
+    if (
+        metadata.get("granularity") != "daily"
+        or metadata.get("target") != "next_day_generation_mwh"
+    ):
+        raise ValueError("일별 총발전량 모델 번들이 필요합니다")
     if metadata.get("unit") != "MWh":
         raise ValueError("모델 발전량 단위가 MWh가 아닙니다")
     for name in ("model.keras", "scaler.json"):
@@ -63,7 +68,7 @@ class LoadedModel:
         import numpy as np
 
         if len(sequence) != SEQ_LEN:
-            raise ValueError(f"정확히 {SEQ_LEN}시간의 입력이 필요합니다")
+            raise ValueError(f"정확히 {SEQ_LEN}일의 입력이 필요합니다")
         x = np.asarray(
             [[self.scaler.transform_point(row) for row in sequence]], dtype="float32"
         )

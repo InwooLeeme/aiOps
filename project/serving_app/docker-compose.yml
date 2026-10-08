@@ -10,7 +10,7 @@ services:
       LOADING_MODE: eager
       AUTO_PREPARE: "1"
     volumes:
-      - ./models/solar:/app/serving_app/models/solar:ro
+      - ./models/solar-daily:/app/serving_app/models/solar-daily:ro
       - ../data/uploads:/app/data/uploads
       - solar-runtime:/app/runtime
       - solar-logs:/app/logs

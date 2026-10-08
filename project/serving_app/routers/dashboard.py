@@ -1,5 +1,6 @@
 """운영 화면에 필요한 요청 지표, 모델 이력, 설정과 최근 이벤트의 읽기 전용 API."""
 
+import json
 import math
 import os
 import re
@@ -8,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from data.features import FEATURE_COLUMNS, SEQ_LEN
+from data.daily_features import FEATURE_COLUMNS, SEQ_LEN
 from fastapi import APIRouter, Request
 from mlflow.tracking import MlflowClient
 from sqlalchemy.engine import make_url
@@ -47,7 +48,8 @@ def system_info():
         "seq_len": SEQ_LEN,
         "n_features": len(FEATURE_COLUMNS),
         "unit": "MWh",
-        "horizon_hours": 1,
+        "horizon_days": 1,
+        "granularity": "daily",
         "rmse_gate": finite_metric(metadata.get("gate_baseline_rmse")),
         "window_size": WINDOW_SIZE,
         "rmse_threshold": finite_metric(metadata.get("drift_threshold_mwh")),
@@ -61,16 +63,36 @@ def system_info():
 
 def version_info(client: MlflowClient, version) -> dict:
     score, mode = None, None
+    params, metrics, tags, metadata = {}, {}, {}, {}
     if version.run_id:
         run = client.get_run(version.run_id)
-        score = run.data.metrics.get("rmse")
-        mode = run.data.params.get("mode")
+        metrics, params, tags = run.data.metrics, run.data.params, run.data.tags
+        score = metrics.get("rmse")
+        mode = params.get("mode")
+        if not params.get("validation_start"):
+            try:
+                path = client.download_artifacts(version.run_id, "bundle/metadata.json")
+                metadata = json.loads(Path(path).read_text(encoding="utf-8"))
+            except Exception:
+                # 오래된 등록 이력은 비교 정보를 임의로 추정하지 않는다.
+                pass
     return {
         "version": str(version.version),
         "created_at": version.creation_timestamp / 1000,
         "stage": version.current_stage,
         "mode": mode,
         "rmse": score if score is not None and math.isfinite(score) else None,
+        "validation_start": params.get("validation_start")
+        or metadata.get("validation_start"),
+        "validation_end": params.get("validation_end")
+        or metadata.get("validation_end"),
+        "parent_version": params.get("parent_version")
+        or metadata.get("parent_version"),
+        "incumbent_rmse": finite_metric(metrics.get("validation_incumbent_rmse")),
+        "weekly_mean_rmse": finite_metric(metrics.get("validation_weekly_mean_rmse")),
+        "persistence_rmse": finite_metric(metrics.get("validation_persistence_rmse")),
+        "simulation": tags.get("simulation") == "true"
+        or metadata.get("simulation") is True,
     }
 
 
@@ -99,6 +121,9 @@ def models_overview():
             "gate_passed": model_metadata().get("gate_passed"),
             "stage": "Local" if source == "local" else "Unknown",
             "created_at": None,
+            "validation_start": model_metadata().get("validation_start"),
+            "validation_end": model_metadata().get("validation_end"),
+            "simulation": model_metadata().get("simulation") is True,
         }
     uri = os.getenv("MLFLOW_TRACKING_URI", config.DEFAULT_TRACKING_URI)
     try:

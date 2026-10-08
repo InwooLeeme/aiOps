@@ -3,7 +3,7 @@
 import uuid
 from pathlib import Path
 
-from data.features import (
+from data.daily_features import (
     SEQ_LEN,
     dataset_summary,
     decode_csv,
@@ -11,14 +11,17 @@ from data.features import (
     validate_sequence,
 )
 from data.storage import SAMPLE_CSV, UPLOAD_DIR, latest_upload
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from starlette.concurrency import run_in_threadpool
+
+from serving_app import forecasts
 
 router = APIRouter(prefix="/data")
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 
 
 @router.post("/upload")
-async def upload(file: UploadFile = File(...)):
+async def upload(request: Request, file: UploadFile = File(...)):
     raw = await file.read(MAX_UPLOAD_BYTES + 1)
     if len(raw) > MAX_UPLOAD_BYTES:
         raise HTTPException(413, "CSV는 20MB 이하여야 합니다")
@@ -32,7 +35,10 @@ async def upload(file: UploadFile = File(...)):
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"solar_{uuid.uuid4().hex}.csv"
     path.write_bytes(raw)
-    return {"filename": path.name, **dataset_summary(rows)}
+    feedback = await run_in_threadpool(
+        forecasts.reconcile, forecasts.db_path(request), rows
+    )
+    return {"filename": path.name, **dataset_summary(rows), "feedback": feedback}
 
 
 def current_dataset():
@@ -72,4 +78,9 @@ def preview():
         "source": "sample" if path.resolve() == SAMPLE_CSV.resolve() else "upload",
         **dataset_summary(rows),
         "example": example,
+        **(
+            forecasts.forecast_context(example["sequence"][-1]["timestamp"])
+            if example
+            else {}
+        ),
     }

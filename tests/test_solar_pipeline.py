@@ -10,29 +10,29 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "project"))
-from data.features import SolarScaler, decode_csv
+from daily_helpers import daily_rows as hourly_rows
+from data.daily_features import SolarScaler, decode_csv
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from serving_app import model_loader
 from serving_app.main import app
 from serving_app.routers import predict
 from test_day1 import csv_bytes
-from test_solar_data import hourly_rows
 
 
 class PipelineTests(unittest.TestCase):
     def setUp(self):
         self.stack = self.enterContext(ExitStack())
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        self.rows = hourly_rows(60 * 24, "2024-01-01T00:00:00")
+        self.rows = hourly_rows(120, "2024-01-01T00:00:00")
         self.path = self.root / "solar.csv"
         self.path.write_bytes(csv_bytes(self.rows))
         self.model = model_loader.LoadedModel(
             lambda x, training=False: [[5.0]],
-            SolarScaler().fit(self.rows[:72]),
+            SolarScaler().fit(self.rows[:14]),
             "production",
             "1",
-            {"validation_end": "2023-11-30T23:00:00", "drift_threshold_mwh": 10.0},
+            {"validation_end": "2023-11-30T00:00:00", "drift_threshold_mwh": 10.0},
         )
         for context in (
             patch.dict(os.environ, {"MODEL_SOURCE": "mlflow", "LOADING_MODE": "lazy"}),
@@ -61,7 +61,7 @@ class PipelineTests(unittest.TestCase):
         )
         self.client = self.stack.enter_context(TestClient(app))
 
-    def evaluate(self, start="2024-02-01T00:00:00", limit=168):
+    def evaluate(self, start="2024-02-01T00:00:00", limit=14):
         source = self.path.read_bytes()
         with predict._replay_lock:
             return predict.evaluate_batch(
@@ -73,16 +73,16 @@ class PipelineTests(unittest.TestCase):
             ).model_dump()
 
     def test_partial_batches_accumulate_and_trigger_once_when_ready(self):
-        first = self.evaluate(limit=84)
+        first = self.evaluate(limit=7)
         self.assertEqual(first["drift_check"]["status"], "insufficient_data")
         self.training.assert_not_called()
-        second = self.evaluate("2024-02-04T12:00:00", 84)
-        self.assertEqual(second["drift_check"]["count"], 168)
+        second = self.evaluate("2024-02-08T00:00:00", 7)
+        self.assertEqual(second["drift_check"]["count"], 14)
         self.assertEqual(second["drift_check"]["retraining"]["status"], "gate_rejected")
         self.assertEqual(self.training.call_count, 1)
         history = self.training.call_args.args[0]
-        self.assertEqual(history[-1]["timestamp"], "2024-02-07T23:00:00")
-        self.assertEqual(len(predict.recent_predictions), 168)
+        self.assertEqual(history[-1]["timestamp"], "2024-02-14T00:00:00")
+        self.assertEqual(len(predict.recent_predictions), 14)
         self.assertIs(model_loader.get_model(), self.model)
 
     def test_repeat_batch_does_not_retrain_same_observations(self):
@@ -90,20 +90,18 @@ class PipelineTests(unittest.TestCase):
         result = self.evaluate()
         self.assertEqual(self.training.call_count, 1)
         self.assertEqual(result["drift_check"]["new_count"], 0)
-        self.assertEqual(
-            len((self.root / "replay.jsonl").read_text().splitlines()), 168
-        )
+        self.assertEqual(len((self.root / "replay.jsonl").read_text().splitlines()), 14)
 
     def test_overlap_only_adds_new_hours_and_reverse_replay_is_rejected(self):
-        self.evaluate(limit=100)
-        result = self.evaluate("2024-02-03T00:00:00", 120)
-        self.assertEqual(result["drift_check"]["count"], 168)
-        self.assertEqual(result["drift_check"]["new_count"], 68)
+        self.evaluate(limit=8)
+        result = self.evaluate("2024-02-05T00:00:00", 10)
+        self.assertEqual(result["drift_check"]["count"], 14)
+        self.assertEqual(result["drift_check"]["new_count"], 6)
         self.assertEqual(self.training.call_count, 1)
         with self.assertRaises(HTTPException) as raised:
             self.evaluate("2024-01-20T00:00:00")
         self.assertEqual(raised.exception.status_code, 409)
-        self.assertEqual(predict._last_replay["cutoff"], "2024-02-07T23:00:00")
+        self.assertEqual(predict._last_replay["cutoff"], "2024-02-14T00:00:00")
 
     def test_dataset_or_model_change_starts_fresh_monitoring_window(self):
         for change in ("dataset", "model"):
@@ -111,19 +109,19 @@ class PipelineTests(unittest.TestCase):
                 predict._last_replay.clear()
                 predict._batch_contexts.clear()
                 predict.recent_predictions.clear()
-                self.evaluate(limit=84)
+                self.evaluate(limit=7)
                 if change == "dataset":
                     self.rows[0]["temperature"] = 12.0
                     self.path.write_bytes(csv_bytes(self.rows))
                 else:
                     self.model.registry_version = "2"
-                result = self.evaluate("2024-02-04T12:00:00", 84)
-                self.assertEqual(result["drift_check"]["count"], 84)
+                result = self.evaluate("2024-02-08T00:00:00", 7)
+                self.assertEqual(result["drift_check"]["count"], 7)
                 self.training.assert_not_called()
 
     def test_gap_does_not_count_as_continuous_week(self):
-        self.evaluate(limit=84)
-        result = self.evaluate("2024-02-04T13:00:00", 84)
+        self.evaluate(limit=7)
+        result = self.evaluate("2024-02-09T00:00:00", 7)
         self.assertFalse(result["drift_check"]["ready"])
         self.training.assert_not_called()
 
@@ -142,7 +140,7 @@ class PipelineTests(unittest.TestCase):
     def test_training_failure_is_reported_without_losing_predictions_or_retrying(self):
         self.training.side_effect = RuntimeError("training unavailable")
         result = self.evaluate()
-        self.assertEqual(len(result["records"]), 168)
+        self.assertEqual(len(result["records"]), 14)
         self.assertEqual(result["drift_check"]["retraining"]["status"], "failed")
         self.assertIs(model_loader.get_model(), self.model)
         self.evaluate()
@@ -183,6 +181,11 @@ class PromotionTests(unittest.TestCase):
         from test_day2 import constant_model
 
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(
+            patch.object(
+                app.state, "forecast_db_path", self.root / "forecasts.db", create=True
+            )
+        )
         self.old_uri = mlflow.get_tracking_uri()
         self.addCleanup(mlflow.set_tracking_uri, self.old_uri)
         self.uri = f"sqlite:///{self.root / 'mlflow.db'}"
@@ -197,7 +200,7 @@ class PromotionTests(unittest.TestCase):
         )
         self.client = MlflowClient()
         self.name = MODEL_NAME
-        self.sequence = hourly_rows(72, "2024-01-01T00:00:00")
+        self.sequence = hourly_rows(14, "2024-01-01T00:00:00")
         self.scaler = SolarScaler().fit(self.sequence)
         self.models = []
         for value in (0.25, 0.5):
@@ -230,7 +233,7 @@ class PromotionTests(unittest.TestCase):
         result = model_loader.promote_candidate("2", self.incumbent, self.sequence)
         self.assertEqual(result.registry_version, "2")
         self.assertIs(model_loader.get_model(), result)
-        self.assertAlmostEqual(result.predict_one(self.sequence), 11.5)
+        self.assertAlmostEqual(result.predict_one(self.sequence), 6.5)
         self.assertEqual(
             self.client.get_model_version(self.name, "2").current_stage, "Production"
         )
@@ -280,11 +283,11 @@ class PromotionTests(unittest.TestCase):
         )
 
     def test_batch_promotion_changes_next_prediction_and_resets_monitoring(self):
-        rows = hourly_rows(60 * 24, "2024-01-01T00:00:00")
+        rows = hourly_rows(120, "2024-01-01T00:00:00")
         path = self.root / "solar.csv"
         path.write_bytes(csv_bytes(rows))
         self.incumbent.metadata.update(
-            validation_end="2023-11-30T23:00:00", drift_threshold_mwh=1.0
+            validation_end="2023-11-30T00:00:00", drift_threshold_mwh=1.0
         )
         with (
             patch.dict(os.environ, {"LOADING_MODE": "lazy"}),
@@ -317,9 +320,9 @@ class PromotionTests(unittest.TestCase):
             self.assertTrue(result["promoted"])
             self.assertEqual(result["served_model_version"], "2")
             self.assertEqual(predict.recent_predictions, [])
-            prediction = client.post("/predict", json={"sequence": rows[:72]}).json()
+            prediction = client.post("/predict", json={"sequence": rows[:14]}).json()
             self.assertEqual(prediction["model_version"], "2")
-            self.assertEqual(prediction["predicted_generation_mwh"], 11.5)
+            self.assertEqual(prediction["predicted_generation_mwh"], 6.5)
 
     def test_deferred_registration_never_promotes_until_activation(self):
         import numpy as np
@@ -332,27 +335,27 @@ class PromotionTests(unittest.TestCase):
                 for name, rmse in (
                     ("model", error),
                     ("persistence", 2.0),
-                    ("previous_day", 4.0),
+                    ("weekly_mean", 4.0),
                     ("incumbent", 2.5),
                 )
             }
             metadata = {
                 "epochs": 1,
                 "seed": 42,
-                "seq_len": 72,
+                "seq_len": 14,
                 "mode": "fine-tune",
                 "metrics": {"validation": scores},
                 "error_threshold_mwh": 1.5 * error,
                 "gate_passed": error == 1.0,
                 "parent_version": "1",
             }
-            passed = passes_gate(error, {"persistence": 2.0, "previous_day": 4.0}, 2.5)
+            passed = passes_gate(error, {"persistence": 2.0, "weekly_mean": 4.0}, 2.5)
             result = _log_and_register(
                 constant_model(),
                 self.scaler,
                 metadata,
                 passed,
-                np.zeros((1, 72, 10), dtype="float32"),
+                np.zeros((1, 14, 8), dtype="float32"),
                 promote=False,
             )
             self.assertFalse(result["promoted"])

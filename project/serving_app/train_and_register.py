@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import numpy as np
-from data.features import (
+from data.daily_features import (
     FEATURE_COLUMNS,
     SEQ_LEN,
     SolarScaler,
@@ -39,9 +39,6 @@ def evaluate_predictions(y_true, y_pred, timestamps) -> dict:
     errors = prediction - truth
     if not np.isfinite(errors).all():
         raise ValueError("평가에 유한하지 않은 발전량이 있습니다")
-    daytime = np.asarray(
-        [6 <= datetime.fromisoformat(t).hour <= 18 for t in timestamps]
-    )
     monthly = {}
     for month in sorted({t[:7] for t in timestamps}):
         mask = np.asarray([t.startswith(month) for t in timestamps])
@@ -54,14 +51,7 @@ def evaluate_predictions(y_true, y_pred, timestamps) -> dict:
         "monthly": monthly,
         "mae": float(np.mean(np.abs(errors))),
         "rmse": float(np.sqrt(np.mean(errors**2))),
-        "daytime_mae": float(np.mean(np.abs(errors[daytime])))
-        if daytime.any()
-        else None,
-        "daytime_rmse": float(np.sqrt(np.mean(errors[daytime] ** 2)))
-        if daytime.any()
-        else None,
         "n_samples": len(truth),
-        "daytime_n_samples": int(daytime.sum()),
     }
 
 
@@ -79,9 +69,9 @@ def passes_gate(
 
 
 def _partition(windows, scaler):
-    # Transform each historical point once: adjacent 72-hour windows share most rows.
+    # Transform each historical point once: adjacent 14-day windows share most rows.
     transformed = {}
-    inputs, targets, timestamps, persistence, previous_day = [], [], [], [], []
+    inputs, targets, timestamps, persistence, weekly_mean = [], [], [], [], []
     for window, target in windows:
         for point in window:
             key = point["timestamp"]
@@ -91,13 +81,13 @@ def _partition(windows, scaler):
         targets.append(target["generation_mwh"])
         timestamps.append(target["timestamp"])
         persistence.append(window[-1]["generation_mwh"])
-        previous_day.append(window[-24]["generation_mwh"])
+        weekly_mean.append(float(np.mean([r["generation_mwh"] for r in window[-7:]])))
     return {
         "X": np.asarray(inputs, dtype="float32"),
         "y": np.asarray(targets),
         "timestamps": timestamps,
         "persistence": persistence,
-        "previous_day": previous_day,
+        "weekly_mean": weekly_mean,
     }
 
 
@@ -164,7 +154,7 @@ def _evaluate(model, partition, scaler):
         partition["timestamps"],
     )
     result = {"model": evaluate_predictions(*args)}
-    for name in ("persistence", "previous_day"):
+    for name in ("persistence", "weekly_mean"):
         result[name] = evaluate_predictions(
             partition["y"], partition[name], partition["timestamps"]
         )
@@ -208,14 +198,14 @@ def _metadata(train, validation, metrics, epochs, mode):
         "validation_metrics": metrics["validation"]["model"],
         "gate_baseline_rmse": min(
             metrics["validation"][name]["rmse"]
-            for name in ("persistence", "previous_day")
+            for name in ("persistence", "weekly_mean")
         ),
         "threshold_rule": "1.5 * validation RMSE; minimum 1e-6 MWh",
-        "daytime_definition": "06:00–18:59 KST clock-hour proxy, not measured daylight",
         "feature_columns": FEATURE_COLUMNS,
         "seq_len": SEQ_LEN,
         "unit": "MWh",
-        "target": "next_hour_generation_mwh",
+        "granularity": "daily",
+        "target": "next_day_generation_mwh",
         "region": "제주",
         "timezone": "Asia/Seoul",
         "metrics": metrics,
@@ -240,6 +230,8 @@ def save_bundle(model, scaler, metadata: dict, directory: Path) -> dict:
             "feature_columns": FEATURE_COLUMNS,
             "seq_len": SEQ_LEN,
             "unit": "MWh",
+            "granularity": "daily",
+            "target": "next_day_generation_mwh",
         }
         metadata["artifact_sha256"] = {
             name: artifact_hash(temp / name) for name in ("model.keras", "scaler.json")
@@ -257,6 +249,23 @@ def save_bundle(model, scaler, metadata: dict, directory: Path) -> dict:
     return metadata
 
 
+def select_daily_candidate(model, scaler, train, selection):
+    """후보·규제 강도는 앞선 선택 구간으로만 결정한다."""
+    from serving_app.daily_residual import fit_daily_residual
+    from serving_app.lstm_model import build_daily_residual
+
+    scores = {"lstm_or_fine_tune": _evaluate(model, selection, scaler)["model"]}
+    selected, selected_alpha = "lstm_or_fine_tune", None
+    for alpha in (0.01, 0.1, 1.0, 10.0):
+        candidate = build_daily_residual()
+        fit_daily_residual(candidate, scaler, train, alpha=alpha)
+        name = f"daily_ridge_{alpha:g}"
+        scores[name] = _evaluate(candidate, selection, scaler)["model"]
+        if scores[name]["rmse"] < scores[selected]["rmse"]:
+            model, selected, selected_alpha = candidate, name, alpha
+    return model, selected, selected_alpha, scores
+
+
 def _train(rows, epochs):
     from tensorflow import keras
 
@@ -269,10 +278,13 @@ def _train(rows, epochs):
     prepared["validation"] = validation_partition
     model = build_model()
     _fit(model, prepared["scaler"], prepared["train"], selection, epochs)
+    model, selected, alpha, candidates = select_daily_candidate(
+        model, prepared["scaler"], prepared["train"], selection
+    )
     validation = _evaluate(model, prepared["validation"], prepared["scaler"])
     promoted = passes_gate(
         validation["model"]["rmse"],
-        {k: validation[k]["rmse"] for k in ("persistence", "previous_day")},
+        {k: validation[k]["rmse"] for k in ("persistence", "weekly_mean")},
     )
     # Test is only reported after fitting and the validation-only gate decision.
     metrics = {
@@ -281,6 +293,11 @@ def _train(rows, epochs):
     }
     metadata = _metadata(
         prepared["train"], prepared["validation"], metrics, epochs, "scratch"
+    )
+    metadata.update(
+        selected_candidate=selected,
+        residual_alpha=alpha,
+        selection_candidates=candidates,
     )
     metadata["architecture"] = model.name
     metadata["selection_start"] = selection["timestamps"][0]
@@ -300,7 +317,7 @@ def train_local(csv_path=None, epochs=BASE_EPOCHS, directory=None) -> dict:
     model, prepared, metadata, passed = _train(load_rows(csv_path), epochs)
     metadata["version"] = "solar-local"
     metadata = save_bundle(
-        model, prepared["scaler"], metadata, directory or MODEL_DIR / "solar"
+        model, prepared["scaler"], metadata, directory or MODEL_DIR / "solar-daily"
     )
     return {
         "metrics": metadata["metrics"],
@@ -325,7 +342,13 @@ def _log_and_register(
         mlflow.log_params(
             {key: metadata[key] for key in ("epochs", "seed", "seq_len", "mode")}
         )
-        for key in ("selected_candidate", "residual_alpha"):
+        for key in (
+            "selected_candidate",
+            "residual_alpha",
+            "validation_start",
+            "validation_end",
+            "parent_version",
+        ):
             if metadata.get(key) is not None:
                 mlflow.log_param(key, metadata[key])
         for name, scores in metadata.get("selection_candidates", {}).items():
@@ -365,6 +388,9 @@ def _log_and_register(
             "promoted": False,
             "gate_passed": bool(passed),
             "version": None,
+            "validation_start": metadata.get("validation_start"),
+            "validation_end": metadata.get("validation_end"),
+            "parent_version": metadata.get("parent_version"),
         }
         if "selected_candidate" in metadata:
             result["selected_candidate"] = metadata["selected_candidate"]
@@ -418,22 +444,24 @@ def fine_tune(
     metadata_extra=None,
     promote=True,
 ) -> dict:
-    """앞선 7일에서 재학습 후보를 선택하고 마지막 7일로 승격을 판정합니다."""
+    """최근 365일 중 마지막 28일 선택, 마지막 14일 최종 게이트를 분리한다."""
     from tensorflow import keras
 
     from serving_app.model_loader import get_model
 
     ordered = sorted(rows, key=lambda r: r["timestamp"])
-    if len(ordered) < 30 * 24:
-        raise ValueError("재학습에는 최소 30일(720시간)의 과거 관측치가 필요합니다")
+    if len(ordered) < 90:
+        raise ValueError("재학습에는 최소 90일의 과거 관측치가 필요합니다")
     end = datetime.fromisoformat(ordered[-1]["timestamp"])
-    if end > datetime.now(ZoneInfo("Asia/Seoul")).replace(tzinfo=None):
+    if end + timedelta(days=1) > datetime.now(ZoneInfo("Asia/Seoul")).replace(
+        tzinfo=None
+    ):
         raise ValueError("미래 시각의 관측치로 재학습할 수 없습니다")
-    earliest = (end - timedelta(days=90) + timedelta(hours=1)).isoformat()
+    earliest = (end - timedelta(days=365) + timedelta(days=1)).isoformat()
     ordered = [row for row in ordered if row["timestamp"] >= earliest]
-    cutoff = (end - timedelta(days=7) + timedelta(hours=1)).isoformat()
+    cutoff = (end - timedelta(days=14) + timedelta(days=1)).isoformat()
     incumbent = incumbent if incumbent is not None else get_model()
-    selection_cutoff = (end - timedelta(days=14) + timedelta(hours=1)).isoformat()
+    selection_cutoff = (end - timedelta(days=42) + timedelta(days=1)).isoformat()
     windows = list(sample_windows(ordered))
     train = _partition(
         [(w, t) for w, t in windows if t["timestamp"] < selection_cutoff],
@@ -446,10 +474,10 @@ def fine_tune(
     validation = _partition(
         [(w, t) for w, t in windows if t["timestamp"] >= cutoff], incumbent.scaler
     )
-    if not len(train["y"]) or not len(selection["y"]) or len(validation["y"]) < 7 * 24:
+    if not len(train["y"]) or not len(selection["y"]) or len(validation["y"]) != 14:
         raise ValueError(
             "재학습에는 완전한 학습 구간과 "
-            "유효한 선택 구간·연속된 최종 검증 7일 구간이 필요합니다"
+            "유효한 선택 구간·연속된 최종 검증 14일 구간이 필요합니다"
         )
     selection_end = max(
         incumbent.metadata.get("training_end", ""),
@@ -464,31 +492,16 @@ def fine_tune(
         optimizer=keras.optimizers.Adam(learning_rate=FINE_TUNE_LR), loss="mse"
     )
     _fit(model, incumbent.scaler, train, selection, epochs)
-    selection_candidates = {
-        "incumbent_fine_tune": _evaluate(model, selection, incumbent.scaler)["model"]
-    }
-    selected_candidate = "incumbent_fine_tune"
-    selected_alpha = None
-    from serving_app.daily_residual import fit_daily_residual
-    from serving_app.lstm_model import build_daily_residual
-
-    # Only the preceding selection week chooses structure/regularization.
-    # Final gate observations cannot change the winner or fitted weights.
-    for alpha in (0.001, 0.01, 0.1, 1.0):
-        candidate = build_daily_residual()
-        fit_daily_residual(candidate, incumbent.scaler, train, alpha=alpha)
-        name = f"daily_residual_alpha_{alpha:g}"
-        score = _evaluate(candidate, selection, incumbent.scaler)["model"]
-        selection_candidates[name] = score
-        if score["rmse"] < selection_candidates[selected_candidate]["rmse"]:
-            model, selected_candidate, selected_alpha = candidate, name, alpha
+    model, selected_candidate, selected_alpha, selection_candidates = (
+        select_daily_candidate(model, incumbent.scaler, train, selection)
+    )
     scores = _evaluate(model, validation, incumbent.scaler)
     scores["incumbent"] = _evaluate(
         incumbent._keras_model, validation, incumbent.scaler
     )["model"]
     passed = passes_gate(
         scores["model"]["rmse"],
-        {k: scores[k]["rmse"] for k in ("persistence", "previous_day")},
+        {k: scores[k]["rmse"] for k in ("persistence", "weekly_mean")},
         scores["incumbent"]["rmse"],
     )
     metadata = _metadata(train, validation, {"validation": scores}, epochs, "fine-tune")

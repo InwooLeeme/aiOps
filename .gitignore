@@ -28,3 +28,5 @@ project/serving_app/models/solar/
 *.db
 *.db-shm
 *.db-wal
+
+project/serving_app/models/solar-daily/

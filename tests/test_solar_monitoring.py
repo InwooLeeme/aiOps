@@ -12,7 +12,7 @@ class MonitoringTests(unittest.TestCase):
         start = datetime(2024, 1, 1)
         return [
             {
-                "timestamp": (start + timedelta(hours=i)).isoformat(),
+                "timestamp": (start + timedelta(days=i)).isoformat(),
                 "predicted": 10.0 + error,
                 "actual": 10.0,
             }

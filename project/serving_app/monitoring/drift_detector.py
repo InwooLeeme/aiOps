@@ -1,11 +1,11 @@
-"""최근 168시간 예측 오차 감시. 성능 저하만으로 개념 드리프트를 단정하지 않는다."""
+"""최근 14일 예측 오차 감시. 성능 저하만으로 개념 드리프트를 단정하지 않는다."""
 
 import math
 from datetime import timedelta
 
-from data.features import parse_timestamp
+from data.daily_features import parse_timestamp
 
-WINDOW_SIZE = 168
+WINDOW_SIZE = 14
 
 
 def compute_rmse(records: list[dict]) -> float:
@@ -28,7 +28,7 @@ def assess_drift(records: list[dict], threshold: float | None) -> dict:
     }
     recent = sorted(unique.values(), key=lambda r: r["timestamp"])
     if recent:
-        cutoff = parse_timestamp(recent[-1]["timestamp"]) - timedelta(hours=WINDOW_SIZE)
+        cutoff = parse_timestamp(recent[-1]["timestamp"]) - timedelta(days=WINDOW_SIZE)
         recent = [r for r in recent if parse_timestamp(r["timestamp"]) > cutoff]
     ready = len(recent) >= WINDOW_SIZE
     result = {

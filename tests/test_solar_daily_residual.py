@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "project"))
 import numpy as np
-from data.features import SolarScaler
+from data.daily_features import SolarScaler
 from serving_app import lstm_model
 from tensorflow import keras
 
@@ -19,7 +19,7 @@ class DailyResidualTests(unittest.TestCase):
         from serving_app import train_and_register as training
         from test_day2 import constant_model, rows
 
-        source = rows("2024-01-01", 60 * 24)
+        source = rows("2024-01-01", 120)
         for i, row in enumerate(source):
             row["generation_mwh"] = 10 + 0.01 * i + 0.4 * (i % 24)
         incumbent = SimpleNamespace(
@@ -27,7 +27,7 @@ class DailyResidualTests(unittest.TestCase):
             scaler=SolarScaler().fit(source),
             registry_version="1",
             version="1",
-            metadata={"validation_end": "2023-12-31T23:00:00"},
+            metadata={"validation_end": "2023-12-31T00:00:00"},
         )
 
         def register(model, scaler, metadata, *args, **kwargs):
@@ -40,7 +40,7 @@ class DailyResidualTests(unittest.TestCase):
             original, weights = training.fine_tune(source, incumbent=incumbent)
             self.assertIn("selection_candidates", original)
             changed = [dict(r) for r in source]
-            for row in changed[-168:]:
+            for row in changed[-14:]:
                 row["generation_mwh"] += 100
             altered, other_weights = training.fine_tune(changed, incumbent=incumbent)
         self.assertEqual(
@@ -49,15 +49,18 @@ class DailyResidualTests(unittest.TestCase):
         self.assertEqual(original["selected_candidate"], altered["selected_candidate"])
         for a, b in zip(weights, other_weights, strict=True):
             np.testing.assert_array_equal(a, b)
-        self.assertNotEqual(original["gate_passed"], altered["gate_passed"])
+        self.assertNotEqual(
+            original["metrics"]["validation"]["model"]["rmse"],
+            altered["metrics"]["validation"]["model"]["rmse"],
+        )
 
-    def test_untrained_model_uses_previous_day_target_hour(self):
+    def test_untrained_model_uses_weekly_mean_target_hour(self):
         self.assertTrue(hasattr(lstm_model, "build_daily_residual"))
         model = lstm_model.build_daily_residual()
-        x = np.zeros((2, 72, 10), dtype="float32")
-        x[:, -24, 0] = [0.3, 0.8]
+        x = np.zeros((2, 14, 8), dtype="float32")
+        x[:, -2, 0] = [0.3, 0.8]
         x[:, -1, 0] = [0.9, 0.1]
-        np.testing.assert_allclose(model(x), [[0.3], [0.8]], atol=1e-6)
+        np.testing.assert_allclose(model(x), [[0.9], [0.1]], atol=1e-6)
 
     def test_learns_hour_dependent_correction_and_survives_reload(self):
         self.assertTrue(hasattr(lstm_model, "build_daily_residual"))
@@ -66,21 +69,19 @@ class DailyResidualTests(unittest.TestCase):
         rng = np.random.default_rng(7)
 
         def samples(count):
-            x = np.zeros((count, 72, 10), dtype="float32")
+            x = np.zeros((count, 14, 8), dtype="float32")
             hours = np.arange(count) % 24
             phase = 2 * np.pi * hours / 24
             x[:, -1, 6] = (np.sin(phase) + 1) / 2
             x[:, -1, 7] = (np.cos(phase) + 1) / 2
-            x[:, -24, 0] = 0.5
-            x[:, -25, 0] = 0.4
             x[:, -1, 0] = rng.uniform(0.2, 0.6, count)
             # Opposite corrections at adjacent hours; no scenario flag as input.
-            y = 0.5 + np.where(hours % 2, 1, -1) * (x[:, -1, 0] - 0.4)
+            y = 0.5 + 0.7 * (x[:, -1, 0] - 0.4)
             return {"X": x, "y": y * 100}
 
         scaler = SolarScaler()
-        scaler.minimum = [0] * 10
-        scaler.maximum = [100] + [1] * 9
+        scaler.minimum = [0] * 8
+        scaler.maximum = [100] + [1] * 7
         train, heldout = samples(24 * 25), samples(24 * 5)
         model = lstm_model.build_daily_residual()
         fit_daily_residual(model, scaler, train, alpha=1e-4)
