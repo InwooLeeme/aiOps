@@ -1,0 +1,10 @@
+# 태양광 AIOps 서빙 컨테이너 (단일 서비스, 빌드 시 base 모델 학습·등록까지 완료)
+#   docker compose -f serving_app/docker-compose.yml up --build
+#   -> 대시보드 http://localhost:8099/ , API 문서 http://localhost:8099/docs  (미검증)
+#
+services:
+  serving-app:
+    build:
+      context: ..
+      dockerfile: serving_app/Dockerfile
+    ports: ["8099:8099"]

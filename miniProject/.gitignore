@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+.DS_Store
+mlruns/
+mlflow.db
+logs/
+data/uploads/
+serving_app/models/

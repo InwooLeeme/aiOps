@@ -1,0 +1,106 @@
+"""
+4구간 분할 데이터를 CSV로 내보내 팀원과 공유하기 위한 스크립트.
+
+  python scripts/export_splits.py   →  data/splits/ 에 train / val / normal_2023 / drift_2024 .csv, all_with_split.csv, README.md
+
+분할(시간 순서, 연 단위): 학습 2019-2021 / 검증 2022 / 정상 운영 2023 / 드리프트 2024
+※ 이 분할은 학습 코드(serving_app/train_and_register.py 의 TRAIN_END, VAL_END)와 일치한다.
+행 = 하루. 모델 입력 창(과거 14일)은 이 표에서 다시 만들 수 있다 — data/features.py 의 build_xy 참고.
+"""
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
+
+import pandas as pd
+
+from data.features import SEQ_LEN, WX, build_xy, load_table
+from data.storage import latest_upload
+
+OUT = "data/splits"
+SPLITS = [  # (이름, 시작 포함, 끝 미포함)
+    ("train", "2019-01-01", "2022-01-01"),
+    ("val", "2022-01-01", "2023-01-01"),
+    ("normal_2023", "2023-01-01", "2024-01-01"),
+    ("drift_2024", "2024-01-01", "2025-01-01"),
+]
+
+RENAME = {"gen": "generation_mwh", "cap": "capacity_mw", "cf": "capacity_factor",
+          "temperature_2m_mean": "fc_temp_c", "relative_humidity_2m_mean": "fc_humidity_pct", "wind_speed_10m_mean": "fc_wind_ms",
+          "cloud_cover_mean": "fc_cloud_pct", "shortwave_radiation_sum": "fc_radiation_mj_m2"}
+
+
+def main():
+    df = load_table(latest_upload())
+    _, _, usable_dates, _ = build_xy(df)  # 타깃이 있고 입력 창이 유효한 날 = 실제 학습/평가에 쓰이는 샘플
+    out = df[["gen", "cap", "cf"] + WX].rename(columns=RENAME).copy()
+    out["generation_missing"] = out["generation_mwh"].isna().astype(int)
+    out["used_as_sample"] = out.index.isin(usable_dates).astype(int)
+    out["split"] = None
+    for name, a, b in SPLITS:
+        out.loc[(out.index >= a) & (out.index < b), "split"] = name
+    out.index.name = "date"
+    out = out.round({"generation_mwh": 3, "capacity_mw": 3, "capacity_factor": 5, "fc_temp_c": 2, "fc_humidity_pct": 1,
+                     "fc_wind_ms": 2, "fc_cloud_pct": 1, "fc_radiation_mj_m2": 2})
+
+    os.makedirs(OUT, exist_ok=True)
+    stats = []
+    for name, _, _ in SPLITS:
+        part = out[out["split"] == name]
+        part.to_csv(f"{OUT}/{name}.csv", encoding="utf-8")
+        stats.append((name, part.index.min().date(), part.index.max().date(), len(part), int(part.generation_missing.sum()), int(part.used_as_sample.sum())))
+    out.to_csv(f"{OUT}/all_with_split.csv", encoding="utf-8")
+
+    rows = "\n".join(f"| {n} | {a} ~ {b} | {r} | {m} | {u} |" for n, a, b, r, m, u in stats)
+    open(f"{OUT}/README.md", "w", encoding="utf-8").write(f"""# 데이터 분할 (제주 태양광 일별 발전량)
+
+시간 순서로 나눴고 섞지 않았습니다. 행 = 하루.
+
+| 파일 | 기간 | 일수 | 발전량 결측일 | 학습/평가에 실제 쓰이는 샘플 수 |
+|---|---|---|---|---|
+{rows}
+
+`all_with_split.csv` 는 위 네 파일을 합친 것(`split` 컬럼으로 구분).
+
+> 이 분할은 학습 코드(`serving_app/train_and_register.py` 의 `TRAIN_END`, `VAL_END`)에 적용된 기준과 같습니다.
+
+## 용도 (구간별 역할)
+| 구간 | 모델이 학습에 쓰나 | 역할 |
+|---|---|---|
+| **train** 2019-2021 | 예 | 가중치 학습. 스케일러(표준화)도 이 구간 통계로만 fit |
+| **val** 2022 | 학습 중 참고 | early stopping, 모델 기준 성능 기록, **드리프트 임계치 보정**(이 구간의 21일 롤링 WAPE 최대값을 올림 → 31%). 모델 선택에 쓰여 오차가 약간 낙관적 |
+| **normal_2023** | 아니오 (모델 고정) | 아무 일 없는 정상 운영 구간. 한 번 정한 임계치로 **오탐이 몇 건인지 확인** |
+| **drift_2024** | 아니오 | 이용률 하락 구간. 감지 → 재학습 → 승격 동작 확인 |
+
+- 임계치 *보정*(val)과 오탐 *확인*(normal_2023)을 서로 다른 해로 나눈 것이 핵심입니다. 같은 해로 하면 순환입니다.
+- 단, normal_2023 결과를 보고 임계치를 다시 조정하면 다시 순환이 됩니다. 한 번 정한 값의 결과를 그대로 보고하세요.
+- drift_2024 는 이용률이 하락한 해이지만, 구조적 변화인지 그해 날씨(장마 등)가 특이했던 것인지는 1년치로 구분할 수 없습니다.
+- 완전히 독립적인 최종 확인은 2025년 이후 새 데이터가 생겨야 가능합니다.
+
+## 컬럼
+| 컬럼 | 설명 |
+|---|---|
+| date | 날짜 |
+| generation_mwh | 일 발전량 합계(MWh). 결측이면 비어 있음 |
+| capacity_mw | 설비용량 평균(MW). 시간이 갈수록 증가(약 177→450MW) |
+| capacity_factor | 이용률 = 발전량 / (설비용량 × 24). **모델의 타깃** |
+| fc_temp_c, fc_humidity_pct, fc_wind_ms, fc_cloud_pct, fc_radiation_mj_m2 | 그날의 **예보** 기상(Open-Meteo 과거 예보, 제주 북부 33.45N 126.55E). 기온·습도·풍속·전운량·일사량 합계 |
+| generation_missing | 1이면 발전량 결측(타깃으로 쓰지 않음) |
+| used_as_sample | 1이면 실제 학습/평가 샘플. 0이면 타깃 결측 또는 직전 14일 이력의 결측이 7일 초과 |
+| split | train / val / normal_2023 / drift_2024 |
+
+## 주의
+- **normal_2023 의 12월(31일)은 발전량이 전부 결측**입니다. 그래서 이 구간은 겨울 샘플이 적습니다(사계절이 완전히 고르지 않음). val 2022 는 결측 없는 완전한 1년입니다.
+- drift_2024 에도 2~5월에 결측 15일이 흩어져 있습니다.
+- 모델 입력은 "과거 {SEQ_LEN}일 + 예측 대상일" 창입니다. val/normal/drift 구간의 첫 {SEQ_LEN}일은 바로 앞 구간 데이터를 이력으로 씁니다(`all_with_split.csv`로 재구성하세요).
+- 입력용 결측 보간(발전 이용률 최대 7일, 기상 최대 3일)은 코드(`data/features.py`)에서 하므로 이 CSV에는 적용돼 있지 않습니다.
+- 원본은 `data/uploads/` 의 발전량 CSV 입니다. 외부로 공유해도 되는 데이터인지는 출처 기준으로 확인하세요.
+""")
+    print("경계:", " | ".join(f"{n} {a}~{b}" for n, a, b in SPLITS))
+    for s in stats:
+        print("%-12s %s ~ %s  일수=%d 결측=%d 샘플=%d" % s)
+
+
+if __name__ == "__main__":
+    main()
